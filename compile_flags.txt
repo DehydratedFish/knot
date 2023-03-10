@@ -1,0 +1,5 @@
+-DDEVELOPER
+-Isource
+-nostartfiles
+-xc++
+
