@@ -1,160 +1,23 @@
 #include "platform.h"
 
-#include "memory.h"
-#include "definitions.h"
-
-#define UNICODE
-#define _UNICODE
-
-#define WIN32_LEAN_AND_MEAN
-#include "windows.h"
-#include "dbghelp.h"
-
-
-static u32 low_u32(u64 value) {
-	return value & 0xFFFFFFFF;
-}
-
-static u32 high_u32(u64 value) {
-	return (value >> 32) & 0xFFFFFFFF;
-}
+#include "stdarg.h"
+#include "stdlib.h"
+#include "errno.h"
+#include "signal.h"
+#include "unistd.h"
+#include "fcntl.h"
+#include "execinfo.h"
+#include "sys/stat.h"
 
 
-extern "C" int _fltused = 0;
-extern "C" int _tls_index = 0;
-
-s32 print(char const *fmt, ...);
-
-r64 PerformanceCounterFrequency;
-r64 platform_time_in_seconds() {
-	LARGE_INTEGER counter;
-	QueryPerformanceCounter(&counter);
-
-	return counter.QuadPart * PerformanceCounterFrequency;
-}
-
-void platform_sleep(u64 milliseconds) {
-	Sleep(milliseconds);
-}
-
-b32 platform_compare_exchange_32(u32 *ptr, u32 exchange, u32 compare) {
-	return InterlockedCompareExchange((long*)ptr, exchange, compare);
-}
-
-#define FILE_BUFFER_SIZE KILOBYTES(4)
-
-enum FileBufferMode {
-	FB_MODE_FLUSH_ON_NEW_LINE,
-	FB_MODE_FLUSH_ON_FULL_BUFFER,
-	FB_MODE_UNBUFFERED
-};
-typedef struct FileBuffer {
-	u8 buffer[FILE_BUFFER_SIZE];
-	s32 used;
-	u32 mode;
-} FileBuffer;
-
-FileBuffer ConsoleFileBuffer;
-HANDLE ConsoleFileHandle;
-
-
-void platform_basic_file_write(HANDLE file, void *buffer, s32 size) {
-	DWORD written = 0;
-	if (!WriteFile(file, buffer, size, &written, 0)) die("WriteFile failed with error code.\n");
-	assert(written == size);
-}
-
-
-void file_buffer_flush(FileBuffer *fb, HANDLE file) {
-	if (fb->used) {
-		platform_basic_file_write(file, fb->buffer, fb->used);
-		fb->used = 0;
-	}
-}
-
-void file_buffer_basic_put(FileBuffer *fb, HANDLE file, u8 c) {
-	if (fb->used == FILE_BUFFER_SIZE) file_buffer_flush(fb, file);
-
-	fb->buffer[fb->used] = c;
-	fb->used += 1;
-}
-
-s32 file_buffer_basic_write(FileBuffer *fb, HANDLE file, u8 *data, s64 size) {
-	s32 space = FILE_BUFFER_SIZE - fb->used;
-	if (space) {
-		if (size < space) space = size;
-		copy_memory(fb->buffer + fb->used, data, space);
-		fb->used += space;
-	}
-	if (fb->used == FILE_BUFFER_SIZE) file_buffer_flush(fb, file);
-
-	return space;
-}
-
-void file_buffer_put(FileBuffer *fb, HANDLE file, u8 c) {
-	if (fb->mode == FB_MODE_UNBUFFERED) {
-		platform_basic_file_write(file, &c, 1);
-		return;
-	}
-
-	file_buffer_basic_put(fb, file, c);
-	if(fb->mode == FB_MODE_FLUSH_ON_NEW_LINE && c == '\n') {
-		file_buffer_flush(fb, file);
-	}
-}
-
-void file_buffer_append(FileBuffer *fb, HANDLE file, u8 *data, s64 size) {
-	switch (fb->mode) {
-	case FB_MODE_UNBUFFERED: {
-		platform_basic_file_write(file, data, size);
-	} break;
-
-	case FB_MODE_FLUSH_ON_FULL_BUFFER: {
-		while (size) {
-			s32 written = file_buffer_basic_write(fb, file, data, size);
-			size -= written;
-			data += written;
-		}
-	} break;
-
-	case FB_MODE_FLUSH_ON_NEW_LINE: {
-		for (s32 i = 0; i < size; i += 1) {
-			file_buffer_basic_put(fb, file, data[i]);
-
-			if (data[i] == '\n') file_buffer_flush(fb, file);
-		}
-	} break;
-	}
-}
-
-
-u32 const STACK_TRACE_SIZE = 64;
-u32 const SYMBOL_NAME_LENGTH = 1024;
 
 INTERNAL void print_stack_trace() {
-	u8 InfoStorage[sizeof(SYMBOL_INFO) + SYMBOL_NAME_LENGTH];
+	u32 const max_entry_count = 128;
+	void *entries[max_entry_count];
 
-	void *stack[STACK_TRACE_SIZE];
-	HANDLE process = GetCurrentProcess();
-
-	if (!SymInitialize(process, 0, TRUE)) {
-		print("Could not retrieve stack trace.");
-		return;
-	}
-
-	USHORT frames = CaptureStackBackTrace(0, STACK_TRACE_SIZE, stack, 0);
-	SYMBOL_INFO *info = (SYMBOL_INFO *)InfoStorage;
-	info->SizeOfStruct = sizeof(SYMBOL_INFO);
-	info->MaxNameLen = SYMBOL_NAME_LENGTH - 1;
-
-	for (int i = 2; i < frames - 2; i += 1) {
-		if (SymFromAddr(process, (DWORD64)stack[i], 0, info))
-			print("%p: %s\n", info->Address, info->Name);
-		else
-			print("0x000000000000: ???");
-	}
-
-	SymCleanup(process);
+	u32 entry_count = backtrace(entries, max_entry_count);
+	print("Stack trace: \n");
+	backtrace_symbols_fd(entries, entry_count, STDOUT_FILENO);
 }
 
 void fire_assert(char const *msg, char const *func, char const *file, int line) {
@@ -163,34 +26,36 @@ void fire_assert(char const *msg, char const *func, char const *file, int line) 
 
 	print_stack_trace();
 
-	DebugBreak();
-	ExitProcess(-1);
+	_exit(-1);
 }
 
 void die(char const *msg) {
-	HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-
 	print("Programm requested to close because of: %s\n\n", msg);
 	print_stack_trace();
 
-	DebugBreak();
-	ExitProcess(-1);
+	_exit(-1);
 }
+
+INTERNAL void segfault_stacktrace(int signal) {
+	print_stack_trace();
+	_exit(-1);
+}
+
 
 void *default_allocator_func(void *ptr, u64 bytes, void *) {
 	void *result = 0;
-	HANDLE heap = GetProcessHeap();
 
 	if (ptr == 0) {
 		if (bytes == 0) return 0; // NOTE: no error condition
 
-		result = HeapAlloc(heap, HEAP_ZERO_MEMORY, bytes);
+		result = malloc(bytes);
+		zero_memory(result, bytes);
 	} else {
 		if (bytes == 0) {
-			HeapFree(heap, 0, ptr);
+			free(ptr);
 			return 0;
 		} else {
-			result = HeapReAlloc(heap, HEAP_ZERO_MEMORY, ptr, bytes);
+			result = realloc(ptr, bytes);
 		}
 	}
 
@@ -200,245 +65,33 @@ void *default_allocator_func(void *ptr, u64 bytes, void *) {
 	return result;
 }
 
-Array<String> parse_command_line_arguments(u8 *cmd_line) {
-	assert(cmd_line);
 
-	Array<String> result;
-
-	while (cmd_line[0]) {
-		if (cmd_line[0] == ' ') { // TODO: check if other whitespace characters are allowed in a commandline
-			cmd_line += 1;
-			continue;
-		}
-
-		u8 *data = cmd_line;
-		s32 length = 0;
-		while (cmd_line[0] && cmd_line[0] != ' ') {
-			if (cmd_line[0] == '\"') {
-				length += 1;
-				cmd_line += 1;
-				while (cmd_line[0] && cmd_line[0] != '\"') {
-					length += 1;
-					cmd_line += 1;
-				}
-				length += 1;
-				cmd_line += 1;
-			}
-			length += 1;
-			cmd_line += 1;
-		}
-		s32 size = length;
-		append(&result, String(data, size));
-	}
-
-	return result;
-}
-
-Allocator DefaultAllocator = {default_allocator_func, 0};
 thread_local MemoryContext ThreadMemoryContext;
-
-void __stdcall mainCRTStartup() {
-	s32 result = 0;
-	{ // NOTE: additional scope so the destructors get called befor ExitProcess()
-		ThreadMemoryContext.allocator = DefaultAllocator;
-
-		ConsoleFileHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-
-		LPWSTR wide_cmd_line = GetCommandLineW();
-		int cmd_line_length = WideCharToMultiByte(CP_UTF8, 0, wide_cmd_line, -1, 0, 0, 0, 0);
-
-		u8 *cmd_line = (u8*)default_allocator_func(0, cmd_line_length, DefaultAllocator.data);
-		int length_check = WideCharToMultiByte(CP_UTF8, 0, wide_cmd_line, -1, (char*)cmd_line, cmd_line_length, 0, 0);
-		assert(cmd_line_length == length_check);
-
-		Array<String> main_args = parse_command_line_arguments(cmd_line);
-		result = application_main(main_args);
-
-		default_allocator_func(cmd_line, 0, DefaultAllocator.data);
-		file_buffer_flush(&ConsoleFileBuffer, ConsoleFileHandle);
-	} ExitProcess(result);
-}
-
-// TODO: read and write stuff, filename
-PlatformFile platform_file_open(String filename) {
-	int chars = MultiByteToWideChar(CP_UTF8, 0, (LPCCH)filename.data, filename.size, 0, 0);
-	wchar_t *wide_buffer = (wchar_t*)allocate_memory(DefaultAllocator, sizeof(wchar_t) * (chars + 1));
-	int check = MultiByteToWideChar(CP_UTF8, 0, (LPCCH)filename.data, filename.size, wide_buffer, chars);
-	wide_buffer[chars] = L'\0';
-
-	PlatformFile file = {0};
-	HANDLE handle = CreateFileW(wide_buffer, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-	if (handle == INVALID_HANDLE_VALUE) {
-		deallocate_memory(DefaultAllocator, wide_buffer);
-		return file;
-	}
-
-	file.name = copy(&filename);
-	file.handle = handle;
-
-	deallocate_memory(DefaultAllocator, wide_buffer);
-	return file;
-}
-
-void platform_file_close(PlatformFile *file) {
-	CloseHandle(file->handle);
-}
-
-u64 platform_file_size(PlatformFile *file) {
-	LARGE_INTEGER size;
-	GetFileSizeEx(file->handle, &size);
-
-	return size.QuadPart;
-}
-
-String platform_read_entire_file(String filename) {
-	PlatformFile file = platform_file_open(filename);
-
-	u64 size = platform_file_size(&file);
-
-	String result;
-	prealloc(&result, size);
-	result.size = size;
-	platform_file_read(&file, 0, result.data, size);
-
-	platform_file_close(&file);
-
-	return result;
-}
-
-u32 platform_file_read(PlatformFile *file, u64 offset, void *buffer, u32 size) {
-	OVERLAPPED ov = {0};
-	ov.Offset = low_u32(offset);
-	ov.OffsetHigh = high_u32(offset);
-
-	ReadFile(file->handle, buffer, size, 0, &ov);
-
-	DWORD bytes_read = 0;
-	GetOverlappedResult(file->handle, &ov, &bytes_read, TRUE);
-
-	return bytes_read;
-}
-
-#if 0
-PlatformDirectory *platform_directory_open(String path) {
-	wchar_t *buffer;
-	int chars = MultiByteToWideChar(CP_UTF8, 0, (LPCCH)path.data, path.size, 0, 0);
-	buffer = allocate_memory(0, sizeof(wchar_t) * (chars + 3)); // room for /* if not present
-	int check = MultiByteToWideChar(CP_UTF8, 0, (LPCCH)path.data, path.size, buffer, chars);
-
-	assert(chars == check);
-
-	if (!PathIsDirectory(buffer)) {
-		deallocate_memory(buffer);
-		return 0;
-	}
-
-	// TODO: make sure /* is not already at the end of the path
-	buffer[chars] = L'/';
-	buffer[chars + 1] = L'*';
-	buffer[chars + 2] = L'\0';
-
-	PlatformDirectory *dir = allocate_memory(0, sizeof(PlatformDirectory));
-	dir->wide_buffer = buffer;
-	return dir;
-}
-
-void platform_directory_close(PlatformDirectory *dir) {
-	deallocate_memory(dir->wide_buffer);
-	string_free(&dir->utf8_name);
-	if (dir->handle != INVALID_HANDLE_VALUE) FindClose(dir->handle);
-
-	deallocate_memory(dir);
-}
-
-INTERNAL void fill_entry(PlatformDirectory *dir) {
-	int chars = WideCharToMultiByte(CP_UTF8, 0, dir->find_data.cFileName, -1, 0, 0, 0, 0);
-	string_resize(&dir->utf8_name, chars);
-	WideCharToMultiByte(CP_UTF8, 0, dir->find_data.cFileName, -1, (LPSTR)dir->utf8_name.data, chars, 0, 0);
-	dir->utf8_name.size -= 1;
-
-	dir->entry.name = string_ref(dir->utf8_name);
-	dir->entry.is_directory = dir->find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
-}
-
-PlatformDirectoryEntry *platform_next_entry(PlatformDirectory *dir) {
-	if (dir->handle == 0) {
-		dir->handle = FindFirstFile(dir->wide_buffer, &dir->find_data);
-		if (dir->handle == INVALID_HANDLE_VALUE) {
-			platform_directory_close(dir);
-
-			return 0;
-		}
-
-		fill_entry(dir);
-	} else {
-		if (FindNextFile(dir->handle, &dir->find_data) == 0) {
-			deallocate_memory(dir->wide_buffer);
-			string_free(&dir->utf8_name);
-			if (dir->handle != INVALID_HANDLE_VALUE) FindClose(dir->handle);
-
-			return 0;
-		}
-
-		fill_entry(dir);
-	}
-
-	return &dir->entry;
-}
-
-
-/*
- * Implementation of the threading API
- *
- */
-
-typedef struct PlatformThread {
-	void *userdata;
-	PlatformThreadFunc *func;
-	HANDLE handle;
-	DWORD id;
-	u32 status;
-} PlatformThread;
-
-
-INTERNAL DWORD WINAPI thread_func(LPVOID data) {
-	PlatformThread *thread = (PlatformThread*)data;
-
-	thread->func(thread->userdata);
-
-	return 0;
-}
-
-PlatformThread *platform_create_thread(PlatformThreadFunc *func, void *userdata) {
-	PlatformThread *thread = ALLOCATE(PlatformThread);
-	thread->func = func;
-	thread->userdata = userdata;
-
-	thread->handle = CreateThread(0, 0, thread_func, thread, 0, &thread->id);
-	if (!thread->handle) {
-		DEALLOCATE(thread);
-		return 0;
-	}
-
-	thread->status = PLATFORM_THREAD_RUNNING;
-
-	return thread;
-}
-#endif
-
-/*
- * Implementation from memory.h
- *
- * General purpose memory functions that need some more love and optimisation.
- *
- */
+Allocator DefaultAllocator = {default_allocator_func, 0};
 
 MemoryContext *get_memory_context() {
 	return &ThreadMemoryContext;
 }
 
+int main(int argc, char **argv) {
+	s32 result = 0;
+
+	signal(SIGSEGV, segfault_stacktrace);
+	ThreadMemoryContext.allocator = DefaultAllocator;
+
+	Array<String> args;
+	for (s32 i = 0; i < argc; i += 1) {
+		append(&args, String((u8*)argv[i], c_string_length(argv[i])));
+	}
+	result = application_main(args);
+}
+
+
 void *allocate(u64 bytes) {
 	return allocate_memory(DefaultAllocator, bytes);
+}
+void deallocate(void *ptr) {
+	deallocate_memory(DefaultAllocator, ptr);
 }
 
 
@@ -467,6 +120,256 @@ void move_memory(void *dest, void *src, u64 size) {
 		copy_memory(dest, src, size);
 	else
 		copy_memory_reverse(dest, src, size);
+}
+
+void zero_memory(void *data, u64 bytes) {
+	u8 *tmp = (u8*)data;
+	for (u64 i = 0; i < bytes; i += 1) {
+		tmp[i] = 0;
+	}
+}
+
+
+// TODO: read and write stuff, filename
+PlatformFile platform_file_open(String filename) {
+	PlatformFile file = {0};
+
+	put(&filename, '\0');
+
+	s32 handle = open((char const*)filename.data, O_RDONLY);
+	if (handle == -1) {
+		print("Error: could not open file %S\n", pr(filename));
+		return file;
+	}
+
+	file.name = copy(&filename);
+	file.handle = (void*)(u64)handle;
+
+	return file;
+}
+
+void platform_file_close(PlatformFile *file) {
+	close((s32)(u64)file->handle); // silence warning
+}
+
+u64 platform_file_size(PlatformFile *file) {
+	struct stat info;
+	if (fstat((s32)(u64)file->handle, &info) == 0) {
+		return info.st_size;
+	}
+
+	return 0;
+}
+
+String platform_read_entire_file(String filename) {
+	String result;
+
+	PlatformFile file = platform_file_open(filename);
+	u64 size = platform_file_size(&file);
+	if (size == 0) return result;
+
+	prealloc(&result, size);
+	result.size = size;
+	platform_file_read(&file, 0, result.data, size);
+
+	platform_file_close(&file);
+
+	return result;
+}
+
+u32 platform_file_read(PlatformFile *file, u64 offset, void *buffer, u32 size) {
+	u32 bytes_read = 0;
+	u32 pending = size;
+
+	do {
+		offset += bytes_read;
+		pending -= bytes_read;
+		bytes_read = pread((s32)(u64)file->handle, buffer, pending, offset);
+	} while (bytes_read > 0);
+
+	return size - pending;
+}
+
+#define FILE_BUFFER_SIZE KILOBYTES(4)
+
+enum FileBufferMode {
+	FB_MODE_FLUSH_ON_NEW_LINE,
+	FB_MODE_FLUSH_ON_FULL_BUFFER,
+	FB_MODE_UNBUFFERED
+};
+typedef struct FileBuffer {
+	u8 buffer[FILE_BUFFER_SIZE];
+	s32 used;
+	u32 mode;
+} FileBuffer;
+
+FileBuffer ConsoleFileBuffer;
+s32 ConsoleFileHandle;
+
+
+void platform_basic_file_write(s32 file, void *buffer, s32 size) {
+	ssize_t written = write(file, buffer, size);
+	if (written == -1) die("WriteFile failed with error code.\n");
+	assert(written == size);
+}
+
+
+void file_buffer_flush(FileBuffer *fb, s32 file) {
+	if (fb->used) {
+		platform_basic_file_write(file, fb->buffer, fb->used);
+		fb->used = 0;
+	}
+}
+
+void file_buffer_basic_put(FileBuffer *fb, s32 file, u8 c) {
+	if (fb->used == FILE_BUFFER_SIZE) file_buffer_flush(fb, file);
+
+	fb->buffer[fb->used] = c;
+	fb->used += 1;
+}
+
+s32 file_buffer_basic_write(FileBuffer *fb, s32 file, u8 *data, s64 size) {
+	s32 space = FILE_BUFFER_SIZE - fb->used;
+	if (space) {
+		if (size < space) space = size;
+		copy_memory(fb->buffer + fb->used, data, space);
+		fb->used += space;
+	}
+	if (fb->used == FILE_BUFFER_SIZE) file_buffer_flush(fb, file);
+
+	return space;
+}
+
+void file_buffer_put(FileBuffer *fb, s32 file, u8 c) {
+	if (fb->mode == FB_MODE_UNBUFFERED) {
+		platform_basic_file_write(file, &c, 1);
+		return;
+	}
+
+	file_buffer_basic_put(fb, file, c);
+	if(fb->mode == FB_MODE_FLUSH_ON_NEW_LINE && c == '\n') {
+		file_buffer_flush(fb, file);
+	}
+}
+
+void file_buffer_append(FileBuffer *fb, s32 file, u8 *data, s64 size) {
+	switch (fb->mode) {
+	case FB_MODE_UNBUFFERED: {
+		platform_basic_file_write(file, data, size);
+	} break;
+
+	case FB_MODE_FLUSH_ON_FULL_BUFFER: {
+		while (size) {
+			s32 written = file_buffer_basic_write(fb, file, data, size);
+			size -= written;
+			data += written;
+		}
+	} break;
+
+	case FB_MODE_FLUSH_ON_NEW_LINE: {
+		for (s32 i = 0; i < size; i += 1) {
+			file_buffer_basic_put(fb, file, data[i]);
+
+			if (data[i] == '\n') file_buffer_flush(fb, file);
+		}
+	} break;
+	}
+}
+
+INTERNAL String convert_double_to_string(u8 *buffer, s32 size, r64 number, s32 precision, b32 scientific, b32 hex, b32 uppercase, b32 keep_sign);
+void convert_to_ptr_string(u8 *buffer, s32 buffer_size, void *address);
+String convert_signed_to_string(u8 *buffer, s32 buffer_size, s64 signed_number, s32 base, b32 uppercase, b32 keep_sign);
+s32 convert_unsigned_to_string(u8 *buffer, s32 buffer_size, u64 number, s32 base, b32 uppercase);
+s64 convert_string_to_s64(u8 *buffer, s32 buffer_size);
+
+s32 print(char const *fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+
+	s32 out = STDOUT_FILENO;
+
+	while (fmt[0]) {
+		if (fmt[0] == '%' && fmt[1]) {
+			fmt += 1;
+
+			switch (fmt[0]) {
+			case 'd': {
+				u8 buffer[128];
+				String ref = convert_signed_to_string(buffer, 128, va_arg(args, s32), 10, false, false);
+
+				file_buffer_append(&ConsoleFileBuffer, out, ref.data, ref.size);
+			} break;
+
+			case 'u': {
+				u8 buffer[128];
+				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 10, false);
+
+				file_buffer_append(&ConsoleFileBuffer, out, buffer, length);
+			} break;
+
+			case 'l': {
+				if (fmt[1] == 'x') {
+					u8 buffer[128];
+					String ref = convert_signed_to_string(buffer, 128, va_arg(args, s64), 16, false, false);
+
+					file_buffer_append(&ConsoleFileBuffer, out, ref.data, ref.size);
+					break;
+				} else {
+					die("Unknown format specifier.\n");
+				}
+				die("Unknown format specifier %l\n");
+			} break;
+
+			case 'x': {
+				u8 buffer[128];
+				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 16, false);
+
+				file_buffer_append(&ConsoleFileBuffer, out, buffer, length);
+			} break;
+
+			case 'p': {
+				u8 buffer[18];
+				convert_to_ptr_string(buffer, 18, va_arg(args, void*));
+
+				file_buffer_append(&ConsoleFileBuffer, out, buffer, 18);
+			} break;
+
+			case 'f': {
+				u8 buffer[512];
+				String res = convert_double_to_string(buffer, 512, va_arg(args, r64), 6, false, false, false, false);
+
+				file_buffer_append(&ConsoleFileBuffer, out, res.data, res.size);
+			} break;
+
+			case 'c': {
+				u8 c = va_arg(args, int);
+				file_buffer_append(&ConsoleFileBuffer, out, &c, 1);
+			} break;
+
+			case 's': {
+				char *str = va_arg(args, char *);
+				s64 length = c_string_length(str);
+
+				file_buffer_append(&ConsoleFileBuffer, out, (u8*)str, length);
+			} break;
+
+			case 'S': {
+				PrintRef str = va_arg(args, PrintRef);
+
+				file_buffer_append(&ConsoleFileBuffer, out, str.data, str.size);
+			} break;
+			}
+
+			fmt += 1;
+			continue;
+		}
+		file_buffer_put(&ConsoleFileBuffer, out, fmt[0]);
+		fmt += 1;
+	}
+
+	va_end(args);
+
+	return 0;
 }
 
 /*
@@ -1113,191 +1016,5 @@ s64 convert_string_to_s64(u8 *buffer, s32 buffer_size) {
 	}
 
 	return result;
-}
-
-s32 print(char const *fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
-
-	HANDLE out = ConsoleFileHandle;
-
-	while (fmt[0]) {
-		if (fmt[0] == '%' && fmt[1]) {
-			fmt += 1;
-
-			switch (fmt[0]) {
-			case 'd': {
-				u8 buffer[128];
-				String ref = convert_signed_to_string(buffer, 128, va_arg(args, s32), 10, false, false);
-
-				file_buffer_append(&ConsoleFileBuffer, out, ref.data, ref.size);
-			} break;
-
-			case 'u': {
-				u8 buffer[128];
-				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 10, false);
-
-				file_buffer_append(&ConsoleFileBuffer, out, buffer, length);
-			} break;
-
-			case 'l': {
-				if (fmt[1] == 'x') {
-					u8 buffer[128];
-					String ref = convert_signed_to_string(buffer, 128, va_arg(args, s64), 16, false, false);
-
-					file_buffer_append(&ConsoleFileBuffer, out, ref.data, ref.size);
-					break;
-				} else {
-					die("Unknown format specifier.\n");
-				}
-				die("Unknown format specifier %l\n");
-			} break;
-
-			case 'x': {
-				u8 buffer[128];
-				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 16, false);
-
-				file_buffer_append(&ConsoleFileBuffer, out, buffer, length);
-			} break;
-
-			case 'p': {
-				u8 buffer[18];
-				convert_to_ptr_string(buffer, 18, va_arg(args, void*));
-
-				file_buffer_append(&ConsoleFileBuffer, out, buffer, 18);
-			} break;
-
-			case 'f': {
-				u8 buffer[512];
-				String res = convert_double_to_string(buffer, 512, va_arg(args, r64), 6, false, false, false, false);
-
-				file_buffer_append(&ConsoleFileBuffer, out, res.data, res.size);
-			} break;
-
-			case 'c': {
-				u8 c = va_arg(args, int);
-				file_buffer_append(&ConsoleFileBuffer, out, &c, 1);
-			} break;
-
-			case 's': {
-				char *str = va_arg(args, char *);
-				s64 length = c_string_length(str);
-
-				file_buffer_append(&ConsoleFileBuffer, out, (u8*)str, length);
-			} break;
-
-			case 'S': {
-				String str = va_arg(args, String);
-
-				file_buffer_append(&ConsoleFileBuffer, out, str.data, str.size);
-			} break;
-			}
-
-			fmt += 1;
-			continue;
-		}
-		file_buffer_put(&ConsoleFileBuffer, out, fmt[0]);
-		fmt += 1;
-	}
-
-	va_end(args);
-
-	return 0;
-}
-
-String format(char const *fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
-
-	String out;
-	prealloc(&out, 32);
-
-	while (fmt[0]) {
-		if (fmt[0] == '%' && fmt[1]) {
-			fmt += 1;
-
-			switch (fmt[0]) {
-			case 'd': {
-				u8 buffer[128];
-				String ref = convert_signed_to_string(buffer, 128, va_arg(args, s32), 10, false, false);
-
-				append(&out, ref);
-			} break;
-
-			case 'u': {
-				u8 buffer[128];
-				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 10, false);
-
-				String ref = {buffer, length};
-				append(&out, ref);
-			} break;
-
-			case 'l': {
-				if (fmt[1] == 'x') {
-					u8 buffer[128];
-					String ref = convert_signed_to_string(buffer, 128, va_arg(args, s64), 16, false, false);
-
-					append(&out, ref);
-					break;
-				} else {
-					die("Unknown format specifier.\n");
-				}
-				die("Unknown format specifier %l\n");
-			} break;
-
-			case 'x': {
-				u8 buffer[128];
-				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 16, false);
-
-				String ref = {buffer, length};
-				append(&out, ref);
-			} break;
-
-			case 'p': {
-				s32 const ptr_buf_size = 18;
-				u8 buffer[ptr_buf_size];
-				convert_to_ptr_string(buffer, ptr_buf_size, va_arg(args, void*));
-
-				String ref = {buffer, ptr_buf_size};
-				append(&out, ref);
-			} break;
-
-			case 'f': {
-				u8 buffer[512];
-				String res = convert_double_to_string(buffer, 512, va_arg(args, r64), 6, false, false, false, false);
-
-				append(&out, res);
-			} break;
-
-			case 'c': {
-				u8 c = va_arg(args, int);
-
-				put(&out, c);
-			} break;
-
-			case 's': {
-				char const *str = va_arg(args, char const *);
-
-				String ref(str);
-				append(&out, ref);
-			} break;
-
-			case 'S': {
-				String str = va_arg(args, String);
-
-				append(&out, str);
-			} break;
-			}
-
-			fmt += 1;
-			continue;
-		}
-		put(&out, fmt[0]);
-		fmt += 1;
-	}
-
-	va_end(args);
-
-	return out;
 }
 

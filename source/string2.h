@@ -201,6 +201,16 @@ inline bool equal(String lhs, String rhs) {
 	return false;
 }
 
+// TODO: String can't be used with variadic args... remove when a proper print is implemented
+struct PrintRef {
+	u8 *data;
+	s32 size;
+};
+
+inline PrintRef pr(String ref) {
+	return {ref.data, ref.size};
+}
+
 
 // TODO: rename
 s64 convert_string_to_s64(u8 *buffer, s32 buffer_size);

@@ -24,6 +24,12 @@ enum {
 	TOKEN_EQUAL,
 	TOKEN_COLON,
 	TOKEN_SEMICOLON,
+	TOKEN_PLUS,
+	TOKEN_MINUS,
+	TOKEN_ASTERISK,
+	TOKEN_AMPERSAND,
+
+	TOKEN_RIGHT_ARROW,
 
 	TOKEN_LEFT_PARENTHESIS,
 	TOKEN_RIGHT_PARENTHESIS,
@@ -47,12 +53,15 @@ struct Token {
 };
 
 struct SyntaxError {
+	String file;
 	String message;
 	SourceLocation location;
+	u8 *position;
 };
 
 struct Parser {
 	String source_code;
+	String filename;
 
 	SourceLocation loc;
 
@@ -63,7 +72,7 @@ struct Parser {
 	Array<SyntaxError> errors;
 };
 
-Parser init_parser(String source);
+Parser init_parser(String filename, String source);
 
 
 struct ParseResult {
@@ -71,6 +80,8 @@ struct ParseResult {
 };
 
 ParseResult parse_as_knot_code(Parser *parser);
+
+void print_ast(ParseResult *result);
 
 #endif // INCLUDE_GUARD_KNOT_PARSER_H
 

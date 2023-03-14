@@ -6,6 +6,8 @@
 
 #if defined(WIN32) || defined(_WIN32)
 #define OS_WINDOWS
+#elif defined(linux)
+#define OS_LINUX
 #else
 #error "Platform not supported"
 #endif
