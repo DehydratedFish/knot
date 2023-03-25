@@ -4,13 +4,9 @@
 #include "string2.h"
 #include "array.h"
 
+#include "knot.h"
 #include "ast.h"
 
-
-struct SourceLocation {
-	s32 line;
-	s32 column;
-};
 
 enum {
 	TOKEN_END_OF_INPUT,
@@ -52,13 +48,6 @@ struct Token {
 	String content;
 };
 
-struct SyntaxError {
-	String file;
-	String message;
-	SourceLocation location;
-	u8 *position;
-};
-
 struct Parser {
 	String source_code;
 	String filename;
@@ -69,19 +58,14 @@ struct Parser {
 	Token current_token;
 
 	bool error_mode;
-	Array<SyntaxError> errors;
 };
 
 Parser init_parser(String filename, String source);
 
 
-struct ParseResult {
-	Array<AstNode*> nodes;
-};
+AbstractSyntaxTree parse_as_knot_code(Parser *parser);
 
-ParseResult parse_as_knot_code(Parser *parser);
-
-void print_ast(ParseResult *result);
+void print_ast(AbstractSyntaxTree *result);
 
 #endif // INCLUDE_GUARD_KNOT_PARSER_H
 

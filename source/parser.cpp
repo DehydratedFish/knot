@@ -37,16 +37,14 @@ INTERNAL u8 Lookup[] = {
 #undef E
 
 
-INTERNAL TypeSpecifier VoidType = {
-	String("void")
-};
 
-INTERNAL void advance_source(Parser *parser, s32 amount) {
-	assert(amount <= parser->source_code.size);
+INTERNAL void advance_source(Parser *parser) {
+	assert(parser->source_code.size);
 
-	parser->source_code.data += amount;
-	parser->source_code.size -= amount;
+	parser->source_code.data += 1;
+	parser->source_code.size -= 1;
 
+	parser->loc.ptr = parser->source_code.data;
 	parser->loc.column += 1;
 }
 
@@ -62,30 +60,25 @@ INTERNAL bool get_char(Parser *parser, u8 *c) {
 	if (parser->source_code.size == 0) return false;
 
 	*c = parser->source_code.data[0];
-	advance_source(parser, 1);
+	advance_source(parser);
 
 	return true;
 }
 
 INTERNAL bool match_char(Parser *parser, u8 c) {
 	if (parser->source_code.size && parser->source_code.data[0] == c) {
-		advance_source(parser, 1);
+		advance_source(parser);
 		return true;
 	}
 
 	return false;
 }
 
-INTERNAL void report_error(Parser *parser, SourceLocation loc, u8 *pos, String message) {
+INTERNAL void parse_error(Parser *parser, SourceLocation loc, String message) {
 	if (parser->error_mode) return;
 
-	SyntaxError error = {parser->filename, message, loc, pos};
-
-	append(&parser->errors, error);
+	report_diagnostic(DIAGNOSTIC_ERROR, loc, parser->filename, message);
 	parser->error_mode = true;
-}
-INTERNAL void report_error(Parser *parser, Token token, String message) {
-	report_error(parser, token.loc, token.content.data, message);
 }
 
 INTERNAL Token parse_identifier(Parser *parser) {
@@ -99,7 +92,7 @@ INTERNAL Token parse_identifier(Parser *parser) {
 		s32 type = Lookup[c];
 		if (type == CHAR_CHARACTER || type == CHAR_DIGIT || type == '_') {
 			size += 1;
-			advance_source(parser, 1);
+			advance_source(parser);
 		} else {
 			break;
 		}
@@ -135,12 +128,12 @@ INTERNAL Token parse_number(Parser *parser) {
 				if (kind == TOKEN_INTEGER) {
 					kind = TOKEN_FLOAT;
 				} else {
-					report_error(parser, location, mark, "Multiple . in number literal.");
+					parse_error(parser, location, "Multiple . in number literal.");
 				}
 			}
 
 			size += 1;
-			advance_source(parser, 1);
+			advance_source(parser);
 		} else {
 			break;
 		}
@@ -191,7 +184,7 @@ INTERNAL Token parse_control(Parser *parser) {
 	case ']': { token.kind = TOKEN_RIGHT_BRACKET; } break;
 
 	default:
-		report_error(parser, token, "Unsupported character.");
+		parse_error(parser, token.loc, "Unsupported character.");
 	}
 
 	return token;
@@ -203,11 +196,11 @@ INTERNAL void skip_whitespaces(Parser *parser) {
 	u8 c;
 	while (peek_char(parser, &c) && Lookup[c] == CHAR_WHITESPACE) {
 		if (c == '\n' || c == '\r') {
-			advance_source(parser, 1);
+			advance_source(parser);
 
 			u8 c2;
 			if (peek_char(parser, &c2) && (c + c2) == multi_new_line) {
-				advance_source(parser, 1);
+				advance_source(parser);
 			}
 
 			parser->loc.line += 1;
@@ -216,7 +209,7 @@ INTERNAL void skip_whitespaces(Parser *parser) {
 			continue;
 		}
 
-		advance_source(parser, 1);
+		advance_source(parser);
 	}
 }
 
@@ -274,6 +267,7 @@ Parser init_parser(String filename, String source) {
 	parser.filename = filename;
 	assert(parser.source_code.alloc == 0);
 
+	parser.loc.ptr = source.data;
 	parser.loc.line = 1;
 	parser.loc.column = 1;
 
@@ -291,7 +285,7 @@ INTERNAL bool consume(Parser *parser, u32 kind, String error_msg) {
 		advance_token(parser);
 		return true;
 	} else {
-		report_error(parser, parser->current_token, error_msg);
+		parse_error(parser, parser->current_token.loc, error_msg);
 	}
 
 	return false;
@@ -335,19 +329,21 @@ INTERNAL void *alloc_node(s32 size, u32 kind) {
 
 INTERNAL AstNode *parse_struct_declaration(Parser *parser, Token name) {
 	AstStructDeclaration *decl = ALLOC_NODE(AstStructDeclaration, AST_STRUCT_DECLARATION);
-	decl->name = name.content;
+	decl->identifier.name = name.content;
+	decl->identifier.location = name.loc;
+
 	consume(parser, TOKEN_KEYWORD_STRUCT, "Missing keyword struct.");
+	decl->location = parser->previous_token.loc;
 	consume(parser, TOKEN_LEFT_BRACE, "Expected { in struct declaration.");
 	Token left_brace = parser->previous_token;
 
 	if (match(parser, TOKEN_RIGHT_BRACE)) {
-		report_error(parser, parser->previous_token, "Empty structs are currently not supported.");
+		parse_error(parser, parser->previous_token.loc, "Empty structs are currently not supported.");
 		return decl;
 	}
 
 	do {
-
-		AstStructMember member = {0};
+		StructMember member = {0};
 
 		consume(parser, TOKEN_IDENTIFIER, "Missing member name in declaration of struct.");
 		member.name = parser->previous_token.content;
@@ -361,7 +357,7 @@ INTERNAL AstNode *parse_struct_declaration(Parser *parser, Token name) {
 	} while (!current_token_is(parser, TOKEN_RIGHT_BRACE));
 
 	if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
-		report_error(parser, left_brace, "Missing } for struct declaration.");
+		parse_error(parser, left_brace.loc, "Missing } for struct declaration.");
 		return decl;
 	}
 
@@ -372,16 +368,20 @@ INTERNAL AstNode *parse_struct_declaration(Parser *parser, Token name) {
 
 INTERNAL AstExpression *parse_number_expr(Parser *parser) {
 	u32 kind = parser->current_token.kind;
-	if (kind == TOKEN_INTEGER || kind == TOKEN_FLOAT) {
-		AstNumericLiteral *literal = ALLOC_NODE(AstNumericLiteral, AST_NUMERIC_LITERAL);
-		literal->value = parser->current_token.content;
-		advance_token(parser);
+	AstNumericLiteral *literal = ALLOC_NODE(AstNumericLiteral, AST_NUMERIC_LITERAL);
+	literal->value = parser->current_token.content;
+	literal->location = parser->current_token.loc;
+	advance_token(parser);
 
-		return literal;
+	if (kind == TOKEN_INTEGER) {
+		literal->numeric_kind = ANL_INTEGER;
+	} else if (kind == TOKEN_FLOAT) {
+		literal->numeric_kind = ANL_FLOAT;
+	} else {
+		parse_error(parser, parser->current_token.loc, "Expected numerical expression.");
 	}
 
-	report_error(parser, parser->current_token, "Expected numerical expression.");
-	return 0;
+	return literal;
 }
 
 INTERNAL AstExpression *parse_identifier_expr(Parser *parser) {
@@ -389,6 +389,7 @@ INTERNAL AstExpression *parse_identifier_expr(Parser *parser) {
 
 	consume(parser, TOKEN_IDENTIFIER, "Expected identifier.");
 	ident->name = parser->previous_token.content;
+	ident->location = parser->previous_token.loc;
 
 	return ident;
 }
@@ -409,6 +410,7 @@ INTERNAL AstExpression *parse_array_declaration(Parser *parser);
 
 INTERNAL AstExpression *parse_reference(Parser *parser) {
 	AstReference *ref = ALLOC_NODE(AstReference, AST_REFERENCE);
+	ref->location = parser->current_token.loc;
 
 	consume(parser, TOKEN_AMPERSAND, "Expected & .");
 	ref->expr = parse_expression(parser, PREC_UNARY);
@@ -418,6 +420,7 @@ INTERNAL AstExpression *parse_reference(Parser *parser) {
 
 INTERNAL AstExpression *parse_dereference(Parser *parser) {
 	AstDereference *deref = ALLOC_NODE(AstDereference, AST_DEREFERENCE);
+	deref->location = parser->current_token.loc;
 
 	consume(parser, TOKEN_ASTERISK, "Expected * .");
 	deref->expr = parse_expression(parser, PREC_UNARY);
@@ -444,6 +447,8 @@ INTERNAL u32 PrecedenceTable[] = {
 
 INTERNAL AstExpression *parse_binary_operator(Parser *parser, AstExpression *lhs, u32 op) {
 	AstBinaryOperator *bin = ALLOC_NODE(AstBinaryOperator, AST_BINARY_OPERATOR);
+	bin->location = parser->previous_token.loc;
+
 	bin->op = op;
 	bin->lhs = lhs;
 	bin->rhs = parse_expression(parser, PrecedenceTable[op] + 1);
@@ -488,7 +493,7 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 	break;
 
 	default:
-		report_error(parser, parser->current_token, "Expected expression.");
+		parse_error(parser, parser->current_token.loc, "Expected expression.");
 		advance_token(parser);
 		return 0;
 	}
@@ -502,7 +507,7 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 		case TOKEN_ASTERISK: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_MUL); } break;
 
 		default:
-			report_error(parser, parser->previous_token, "Unknown binary operator.");
+			parse_error(parser, parser->previous_token.loc, "Unknown binary operator.");
 			advance_token(parser);
 		}
 	}
@@ -512,15 +517,17 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 
 INTERNAL AstNode *parse_variable_declaration(Parser *parser, Token name) {
 	AstVariableDeclaration *decl = ALLOC_NODE(AstVariableDeclaration, AST_VARIABLE_DECLARATION);
-	decl->name = name.content;
+	decl->identifier.name = name.content;
+	decl->identifier.location = name.loc;
+	decl->location = name.loc;
 
 	if (current_token_is(parser, TOKEN_IDENTIFIER)) {
 		decl->type = parse_type_specifier(parser);
 	}
 
-	consume(parser, TOKEN_EQUAL, "Missing = in declaration.");
-
-	decl->expr = parse_expression(parser, PREC_ASSIGNMENT);
+	if (match(parser, TOKEN_EQUAL)) {
+	    decl->expr = parse_expression(parser, PREC_ASSIGNMENT);
+	}
 
 	consume(parser, TOKEN_SEMICOLON, "Missing ; .");
 
@@ -529,9 +536,11 @@ INTERNAL AstNode *parse_variable_declaration(Parser *parser, Token name) {
 
 INTERNAL AstNode *parse_function_declaration(Parser *parser, Token name) {
 	AstFuncitonDeclaration *decl = ALLOC_NODE(AstFuncitonDeclaration, AST_FUNCTION_DECLARATION);
-	decl->name = name.content;
+	decl->identifier.name = name.content;
+	decl->identifier.location = name.loc;
 
 	consume(parser, TOKEN_LEFT_PARENTHESIS, "Expected ( .");
+	decl->location = parser->previous_token.loc;
 
 	if (!match(parser, TOKEN_RIGHT_PARENTHESIS)) {
 		do {
@@ -556,7 +565,7 @@ INTERNAL AstNode *parse_function_declaration(Parser *parser, Token name) {
 
 	do {
 		if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
-			report_error(parser, left_brace, "Missing } to end function body.");
+			parse_error(parser, left_brace.loc, "Missing } to end function body.");
 			return decl;
 		}
 
@@ -570,6 +579,7 @@ INTERNAL AstExpression *parse_array_declaration(Parser *parser) {
 	consume(parser, TOKEN_LEFT_BRACKET, "Expected [ for array declaration.");
 
 	AstArrayDeclaration *decl = ALLOC_NODE(AstArrayDeclaration, AST_ARRAY_DECLARATION);
+	decl->location = parser->previous_token.loc;
 
 	if (match(parser, TOKEN_RIGHT_BRACKET)) return decl;
 
@@ -603,7 +613,7 @@ INTERNAL AstNode *parse_declaration(Parser *parser) {
 			return parse_function_declaration(parser, identifier);
 		} break;
 		}
-		report_error(parser, parser->current_token, "Missing type specifier.");
+		parse_error(parser, parser->current_token.loc, "Missing type specifier.");
 	}
 
 	return 0;
@@ -611,6 +621,7 @@ INTERNAL AstNode *parse_declaration(Parser *parser) {
 
 INTERNAL AstNode *parse_return(Parser *parser) {
 	AstReturn *ret = ALLOC_NODE(AstReturn, AST_RETURN);
+	ret->location = parser->current_token.loc;
 
 	consume(parser, TOKEN_KEYWORD_RETURN, "Expected return.");
 
@@ -635,7 +646,7 @@ INTERNAL AstNode *parse_statement(Parser *parser) {
 	} break;
 	}
 
-	report_error(parser, parser->current_token, "Expected statement.");
+	parse_error(parser, parser->current_token.loc, "Expected statement.");
 	advance_token(parser);
 
 	return 0;
@@ -658,14 +669,15 @@ END:
 	parser->error_mode = false;
 }
 
-ParseResult parse_as_knot_code(Parser *parser) {
-	ParseResult result;
+AbstractSyntaxTree parse_as_knot_code(Parser *parser) {
+	AbstractSyntaxTree result = {};
 
+	result.filename = parser->filename;
 	while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
 		if (parser->error_mode) {
 			synchronize(parser);
 		}
-		append(&result.nodes, parse_statement(parser));
+		append(&result.global_scope.statements, parse_statement(parser));
 	}
 
 	return result;
@@ -721,7 +733,7 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 
 	case AST_STRUCT_DECLARATION:{
 		AstStructDeclaration *decl = (AstStructDeclaration*)node;
-		print("Declare struct: %S {", pr(decl->name));
+		print("Declare struct: %S {", pr(decl->identifier.name));
 
 		if (decl->members.size) print("%S: %S", pr(decl->members[0].name), pr(decl->members[0].type.name));
 		for (s32 i = 1; i < decl->members.size; i += 1) {
@@ -733,7 +745,7 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 
 	case AST_VARIABLE_DECLARATION: {
 		AstVariableDeclaration *decl = (AstVariableDeclaration*)node;
-		print("Declare variable: %S: %S", pr(decl->name), pr(decl->type.name));
+		print("Declare variable: %S: %S", pr(decl->identifier.name), pr(decl->type.name));
 		if (decl->type.array_size) print("[%d]", decl->type.array_size);
 		if (decl->type.pointer_depth) for (s32 i = 0; i < decl->type.pointer_depth; i += 1) print("*");
 		print("\n");
@@ -741,7 +753,7 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 
 	case AST_FUNCTION_DECLARATION: {
 		AstFuncitonDeclaration *decl = (AstFuncitonDeclaration*)node;
-		print("Declare function: %S with body:\n", pr(decl->name));
+		print("Declare function: %S with body:\n", pr(decl->identifier.name));
 
 		for (s32 i = 0; i < decl->body.statements.size; i += 1) {
 			print_ast_node(decl->body.statements[i], depth + 1);
@@ -763,9 +775,9 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 	}
 }
 
-void print_ast(ParseResult *result) {
-	for (s32 i = 0; i < result->nodes.size; i += 1) {
-		print_ast_node(result->nodes[i], 0);
+void print_ast(AbstractSyntaxTree *result) {
+	for (s32 i = 0; i < result->global_scope.statements.size; i += 1) {
+		print_ast_node(result->global_scope.statements[i], 0);
 	}
 }
 

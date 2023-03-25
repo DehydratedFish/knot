@@ -114,6 +114,12 @@ struct String {
 
 		return *this;
 	}
+
+	u8 &operator[](s32 index) {
+		BOUNDS_CHECK(0, size - 1, index, "String indexing out of bounds");
+
+		return data[index];
+	}
 };
 
 
@@ -199,6 +205,17 @@ inline bool equal(String lhs, String rhs) {
 	}
 
 	return false;
+}
+
+// NOTE: simple djb2 hash
+inline u32 hash(String string) {
+	u32 hash = 5381;
+
+	for (s32 i = 0; i < string.size; i += 1) {
+		hash = hash * 33 ^ string[i];
+	}
+
+	return hash;
 }
 
 // TODO: String can't be used with variadic args... remove when a proper print is implemented

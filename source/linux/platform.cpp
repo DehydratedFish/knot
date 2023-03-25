@@ -282,6 +282,96 @@ String convert_signed_to_string(u8 *buffer, s32 buffer_size, s64 signed_number, 
 s32 convert_unsigned_to_string(u8 *buffer, s32 buffer_size, u64 number, s32 base, b32 uppercase);
 s64 convert_string_to_s64(u8 *buffer, s32 buffer_size);
 
+
+String format(char const *fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+
+	String result; // TODO: prealloc
+	while (fmt[0]) {
+		if (fmt[0] == '%' && fmt[1]) {
+			fmt += 1;
+
+			switch (fmt[0]) {
+			case 'd': {
+				u8 buffer[128];
+				String ref = convert_signed_to_string(buffer, 128, va_arg(args, s32), 10, false, false);
+
+				append(&result, ref.data, ref.size);
+			} break;
+
+			case 'u': {
+				u8 buffer[128];
+				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 10, false);
+
+				append(&result, buffer, length);
+			} break;
+
+			case 'l': {
+				if (fmt[1] == 'x') {
+					u8 buffer[128];
+					String ref = convert_signed_to_string(buffer, 128, va_arg(args, s64), 16, false, false);
+
+					append(&result, ref.data, ref.size);
+					break;
+				} else {
+					die("Unknown format specifier.\n");
+				}
+				die("Unknown format specifier %l\n");
+			} break;
+
+			case 'x': {
+				u8 buffer[128];
+				s32 length = convert_unsigned_to_string(buffer, 128, va_arg(args, u32), 16, false);
+
+				append(&result, buffer, length);
+			} break;
+
+			case 'p': {
+				u8 buffer[18];
+				convert_to_ptr_string(buffer, 18, va_arg(args, void*));
+
+				append(&result, buffer, 18);
+			} break;
+
+			case 'f': {
+				u8 buffer[512];
+				String res = convert_double_to_string(buffer, 512, va_arg(args, r64), 6, false, false, false, false);
+
+				append(&result, res.data, res.size);
+			} break;
+
+			case 'c': {
+				u8 c = va_arg(args, int);
+				append(&result, &c, 1);
+			} break;
+
+			case 's': {
+				char *str = va_arg(args, char *);
+				s64 length = c_string_length(str);
+
+				append(&result, (u8*)str, length);
+			} break;
+
+			case 'S': {
+				PrintRef str = va_arg(args, PrintRef);
+
+				append(&result, str.data, str.size);
+			} break;
+			}
+
+			fmt += 1;
+			continue;
+		}
+		put(&result, fmt[0]);
+		fmt += 1;
+	}
+
+	va_end(args);
+
+	return result;
+}
+
 s32 print(char const *fmt, ...) {
 	va_list args;
 	va_start(args, fmt);

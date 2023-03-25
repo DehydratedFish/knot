@@ -8,6 +8,7 @@
 s32 application_main(Array<String> args);
 
 s32 print(char const *fmt, ...);
+String format(char const *fmt, ...);
 
 
 

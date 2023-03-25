@@ -4,13 +4,68 @@
 #include "definitions.h"
 #include "string2.h"
 #include "array.h"
+#include "hash_table.h"
 
+#include "knot.h"
 
 
 struct AstNode;
+struct TypeInfo;
+
+
+struct Identifier {
+	String name;
+	SourceLocation location;
+};
+
+struct TypeSpecifier {
+	TypeInfo *type;
+	String name;
+	u32 array_size;
+	u8 pointer_depth;
+};
+
+struct StructMember {
+	String name;
+	TypeSpecifier type;
+	s32 offset;
+};
+
+enum {
+	TYPE_BASIC,
+	TYPE_STRUCT,
+	TYPE_ENUM,
+};
+struct TypeInfo {
+	u32 kind;
+	u32 type_id;
+	// annotations
+	s32 member_count;
+	StructMember *members;
+};
+
+enum {
+	IDENTIFIER_UNDEFINED,
+	IDENTIFIER_CONSTANT,
+	IDENTIFIER_VARIABLE,
+	IDENTIFIER_TYPE,
+
+	IDENTIFIER_TYPE_COUNT
+};
+struct IdentifierInfo {
+	u32 kind;
+
+	union {
+		TypeInfo type_info;
+	};
+};
+
 
 struct Scope {
+	Scope *parent;
+
 	Array<AstNode*> statements;
+	HashTable<String, IdentifierInfo, hash> symbols;
 };
 
 enum {
@@ -34,16 +89,10 @@ enum {
 	AST_TYPE_COUNT
 };
 
-struct TypeSpecifier {
-	String name;
-	u32 id;
-	u32 array_size;
-	u8 pointer_depth;
-};
-
 struct AstNode {
-	u32 kind;
 	TypeSpecifier type;
+	SourceLocation location;
+	u32 kind;
 };
 
 struct AstExpression : AstNode {
@@ -69,8 +118,13 @@ struct AstDereference : AstExpression {
 	AstExpression *expr;
 };
 
+enum {
+	ANL_INTEGER,
+	ANL_FLOAT,
+};
 struct AstNumericLiteral : AstExpression {
 	String value;
+	u32 numeric_kind;
 };
 
 struct AstIdentifier : AstExpression {
@@ -82,20 +136,13 @@ struct AstArrayDeclaration : AstExpression {
 };
 
 struct AstVariableDeclaration : AstNode {
-	String name;
-	String declared_type;
+	Identifier identifier;
 	AstExpression *expr;
 };
 
-struct AstStructMember {
-	String name;
-	TypeSpecifier type;
-	s32 offset;
-};
-
 struct AstStructDeclaration : AstNode {
-	String name;
-	Array<AstStructMember> members;
+	Identifier identifier;
+	Array<StructMember> members;
 };
 
 struct AstParameter : AstNode {
@@ -108,11 +155,17 @@ struct AstReturn : AstNode {
 };
 
 struct AstFuncitonDeclaration : AstNode {
-	String name;
+	Identifier identifier;
 	Array<AstParameter> params;
 	Array<TypeSpecifier> return_types;
 
 	Scope body;
+};
+
+struct AbstractSyntaxTree {
+	String filename;
+	Scope global_scope;
+	Scope *current_scope;
 };
 
 #endif // INCLUDE_GUARD_KNOT_AST_H

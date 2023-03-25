@@ -1,13 +1,29 @@
 #include "platform.h"
 
+#include "knot.h"
 #include "parser.h"
+#include "type_check.h"
 
 
-String find_line(u8 *position, SourceLocation loc, String source) {
-	u8 *line_begin = position - (loc.column - 1);
+INTERNAL Array<DiagnosticMessage> Diagnostics;
+void report_diagnostic(u32 kind, SourceLocation location, String file, String message) {
+	DiagnosticMessage msg = {
+		{},
+		file,
+		location,
+		kind
+	};
+
+	assert(location.ptr != 0);
+	append(&Diagnostics, msg);
+	Diagnostics[Diagnostics.size - 1].message = (String&&)message;
+}
+
+String find_line(SourceLocation loc, String source) {
+	u8 *line_begin = loc.ptr - (loc.column - 1);
 	s32 length = loc.column;
 
-	s32 source_left = (position - source.data);
+	s32 source_left = source.size - (loc.ptr - source.data);
 	for (; length < source_left && line_begin[length] != '\n' && line_begin[length] != '\r'; length += 1);
 
 	return String(line_begin, length);
@@ -23,6 +39,33 @@ s32 count_characters(String string, u8 c) {
 	return count;
 }
 
+INTERNAL bool print_diagnostics(String source) {
+	if (Diagnostics.size) {
+		print("Encountered %d error(s).\n", Diagnostics.size);
+		for (s32 i = 0; i < Diagnostics.size; i += 1) {
+			DiagnosticMessage *diag = &Diagnostics[i];
+
+			String line = find_line(diag->location, source);
+			s32 tab_count = count_characters(line, '\t');
+			print("%S:%d:%d: %S\n", pr(diag->file), diag->location.line, diag->location.column, pr(diag->message));
+			print("%S\n", pr(line));
+
+			// TODO: proper tab handling
+			s32 spaces = diag->location.column - 1 + (tab_count * 7);
+			for (s32 i = 0; i < spaces; i += 1) {
+				print(" ");
+			}
+			print("^\n\n");
+		}
+
+		print("Compiler finished with errors.\n");
+
+		return true;
+	}
+
+	return false;
+}
+
 s32 application_main(Array<String> args) {
 	String file_to_parse;
 #if DEVELOPER
@@ -35,39 +78,21 @@ s32 application_main(Array<String> args) {
 
 	file_to_parse = args[1];
 #endif // DEVELOPER
-       
+
 	String source = platform_read_entire_file(file_to_parse);
 	Parser parser = init_parser(file_to_parse, source);
 
-	ParseResult tree = parse_as_knot_code(&parser);
+	AbstractSyntaxTree tree = parse_as_knot_code(&parser);
+	if (print_diagnostics(source)) return -1;
 
-	if (parser.errors.size) {
-		print("Encountered %d error(s).\n", parser.errors.size);
-		for (s32 i = 0; i < parser.errors.size; i += 1) {
-			SyntaxError *error = &parser.errors[i];
+	print("Type checking.\n");
+	type_check_ast(&tree);
+	if (print_diagnostics(source)) return -1;
 
-			String line = find_line(error->position, error->location, source);
-			s32 tab_count = count_characters(line, '\t');
-			print("%S:%d:%d: %S\n", pr(error->file), error->location.line, error->location.column, pr(error->message));
-			print("%S\n", pr(line));
+	print("\nCompiler finished.\n");
 
-			// TODO: proper tab handling
-			s32 spaces = error->location.column - 1 + (tab_count * 7);
-			for (s32 i = 0; i < spaces; i += 1) {
-				print(" ");
-			}
-			print("^\n\n");
-		}
-
-		print("Compiler finished with errors.\n");
-
-		return -1;
-	}
-
-	print("Compiler finished.\n");
-
-	print("Contructed following AST:\n\n");
-	print_ast(&tree);
+	//print("Contructed following AST:\n\n");
+	//print_ast(&tree);
 
 	return 0;
 }
