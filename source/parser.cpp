@@ -1,6 +1,7 @@
 #include "parser.h"
 
 #include "platform.h"
+#include "io.h"
 
 
 enum {
@@ -66,7 +67,16 @@ INTERNAL bool get_char(Parser *parser, u8 *c) {
 }
 
 INTERNAL bool match_char(Parser *parser, u8 c) {
-	if (parser->source_code.size && parser->source_code.data[0] == c) {
+	if (parser->source_code.size && parser->source_code[0] == c) {
+		advance_source(parser);
+		return true;
+	}
+
+	return false;
+}
+
+INTERNAL bool match_char_type(Parser *parser, u32 type) {
+	if (parser->source_code.size && Lookup[parser->source_code[0]] == type) {
 		advance_source(parser);
 		return true;
 	}
@@ -104,8 +114,8 @@ INTERNAL Token parse_identifier(Parser *parser) {
 		{mark, size}
 	};
 
-	if (equal(token.content, "struct")) {
-		token.kind = TOKEN_KEYWORD_STRUCT;
+	if (equal(token.content, "type")) {
+		token.kind = TOKEN_KEYWORD_TYPE;
 	} else if (equal(token.content, "return")) {
 		token.kind = TOKEN_KEYWORD_RETURN;
 	}
@@ -125,6 +135,7 @@ INTERNAL Token parse_number(Parser *parser) {
 		s32 type = Lookup[c];
 		if (type == CHAR_DIGIT || c == '.') {
 			if (c == '.') {
+				if (parser->source_code.size > 2 && parser->source_code[1] == '.') break;
 				if (kind == TOKEN_INTEGER) {
 					kind = TOKEN_FLOAT;
 				} else {
@@ -148,6 +159,16 @@ INTERNAL Token parse_number(Parser *parser) {
 	return token;
 }
 
+INTERNAL void skip_comment(Parser *parser) {
+	u8 c;
+	while (peek_char(parser, &c)) {
+		if (c == '\n' || c == '\r') return;
+
+		advance_source(parser);
+	}
+}
+
+INTERNAL Token next_token(Parser *parser);
 INTERNAL Token parse_control(Parser *parser) {
 	Token token = {};
 	token.loc = parser->loc;
@@ -158,13 +179,36 @@ INTERNAL Token parse_control(Parser *parser) {
 	token.content = String(parser->source_code.data - 1, 1);
 
 	switch (c) {
-	case '.': { token.kind = TOKEN_DOT; } break;
+	case '.': {
+		if (match_char(parser, '.')) {
+			token.kind = TOKEN_DOUBLE_DOT;
+			token.content.size += 1;
+			break;
+		}
+		token.kind = TOKEN_DOT;
+	} break;
 	case ',': { token.kind = TOKEN_COMMA; } break;
 	case '=': { token.kind = TOKEN_EQUAL; } break;
-	case ':': { token.kind = TOKEN_COLON; } break;
+	case ':': {
+		if (match_char(parser, ':')) {
+			token.kind = TOKEN_DOUBLE_COLON;
+			token.content.size += 1;
+			break;
+		}
+		token.kind = TOKEN_COLON;
+	} break;
+
 	case ';': { token.kind = TOKEN_SEMICOLON; } break;
 	case '*': { token.kind = TOKEN_ASTERISK; } break;
 	case '&': { token.kind = TOKEN_AMPERSAND; } break;
+	case '/': {
+		if (match_char(parser, '/')) {
+			skip_comment(parser);
+			return next_token(parser);
+			break;
+		}
+		token.kind = TOKEN_SLASH;
+	} break;
 
 	case '+': { token.kind = TOKEN_PLUS; } break;
 	case '-': {
@@ -215,10 +259,6 @@ INTERNAL void skip_whitespaces(Parser *parser) {
 
 
 INTERNAL Token next_token(Parser *parser) {
-	if (parser->error_mode) {
-		parser->error_mode = false;
-	}
-
 	while (parser->source_code.size) {
 		switch (Lookup[parser->source_code.data[0]]) {
 		case CHAR_CHARACTER: {
@@ -252,12 +292,25 @@ INTERNAL Token next_token(Parser *parser) {
 	token.kind = TOKEN_END_OF_INPUT;
 	token.content.data = parser->source_code.data - 1;
 	token.content.size = 0;
+	token.loc = parser->loc;
 	return token;
+}
+
+INTERNAL Token peek_token(Parser *parser) {
+	parser->peek_token = next_token(parser);
+	parser->has_peek = true;
+	
+	return parser->peek_token;
 }
 
 INTERNAL void advance_token(Parser *parser) {
 	parser->previous_token = parser->current_token;
-	parser->current_token  = next_token(parser);
+	if (parser->has_peek) {
+		parser->current_token = parser->peek_token;
+		parser->has_peek = false;
+	} else {
+		parser->current_token  = next_token(parser);
+	}
 }
 
 Parser init_parser(String filename, String source) {
@@ -300,17 +353,20 @@ INTERNAL bool match(Parser *parser, u32 kind) {
 }
 
 
-INTERNAL TypeSpecifier parse_type_specifier(Parser *parser) {
-	TypeSpecifier type = {0};
+INTERNAL TypeInfo parse_type_specifier(Parser *parser) {
+	TypeInfo type = {0};
 
 	consume(parser, TOKEN_IDENTIFIER, "Expected type name.");
 	type.name = parser->previous_token.content;
 
 	if (match(parser, TOKEN_LEFT_BRACKET)) {
-		consume(parser, TOKEN_INTEGER, "Array count needs to be an integer.");
-		type.array_size = convert_string_to_s64(parser->previous_token.content.data, parser->previous_token.content.size);
+		type.flags |= TYPE_FLAG_ARRAY;
+		if (!match(parser, TOKEN_RIGHT_BRACKET)) {
+			consume(parser, TOKEN_INTEGER, "Array count needs to be an integer.");
+			type.array_size = to_s64(parser->previous_token.content);
 
-		consume(parser, TOKEN_RIGHT_BRACKET, "Expected ] in array type declaration");
+			consume(parser, TOKEN_RIGHT_BRACKET, "Expected ] in array type declaration");
+		}
 	}
 	while (match(parser, TOKEN_ASTERISK)) {
 		type.pointer_depth += 1;
@@ -327,61 +383,39 @@ INTERNAL void *alloc_node(s32 size, u32 kind) {
 }
 #define ALLOC_NODE(type, kind) (type*)alloc_node(sizeof(type), kind)
 
-INTERNAL AstNode *parse_struct_declaration(Parser *parser, Token name) {
-	AstStructDeclaration *decl = ALLOC_NODE(AstStructDeclaration, AST_STRUCT_DECLARATION);
-	decl->identifier.name = name.content;
-	decl->identifier.location = name.loc;
+INTERNAL bool string_number_smaller_as(String number, String maximum) {
+	if (number.size < maximum.size) return true;
+	if (number.size > maximum.size) return false;
 
-	consume(parser, TOKEN_KEYWORD_STRUCT, "Missing keyword struct.");
-	decl->location = parser->previous_token.loc;
-	consume(parser, TOKEN_LEFT_BRACE, "Expected { in struct declaration.");
-	Token left_brace = parser->previous_token;
-
-	if (match(parser, TOKEN_RIGHT_BRACE)) {
-		parse_error(parser, parser->previous_token.loc, "Empty structs are currently not supported.");
-		return decl;
+	for (s32 i = 0; i < number.size; i += 1) {
+		if (number[i] > maximum[i]) return false;
 	}
 
-	do {
-		StructMember member = {0};
-
-		consume(parser, TOKEN_IDENTIFIER, "Missing member name in declaration of struct.");
-		member.name = parser->previous_token.content;
-
-		consume(parser, TOKEN_COLON, "Missing : in member declaration");
-		member.type = parse_type_specifier(parser);
-
-		consume(parser, TOKEN_SEMICOLON, "Missing ; to end struct member.");
-
-		append(&decl->members, member);
-	} while (!current_token_is(parser, TOKEN_RIGHT_BRACE));
-
-	if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
-		parse_error(parser, left_brace.loc, "Missing } for struct declaration.");
-		return decl;
-	}
-
-	consume(parser, TOKEN_RIGHT_BRACE, "Missing } to end declaration of struct");
-
-	return decl;
+	return true;
 }
 
 INTERNAL AstExpression *parse_number_expr(Parser *parser) {
 	u32 kind = parser->current_token.kind;
-	AstNumericLiteral *literal = ALLOC_NODE(AstNumericLiteral, AST_NUMERIC_LITERAL);
-	literal->value = parser->current_token.content;
-	literal->location = parser->current_token.loc;
 	advance_token(parser);
 
 	if (kind == TOKEN_INTEGER) {
-		literal->numeric_kind = ANL_INTEGER;
+		if (!string_number_smaller_as(parser->previous_token.content, "18446744073709551615")) {
+			parse_error(parser, parser->previous_token.loc, "Integer literal is too large to fit into u64.");
+			return 0;
+		}
+
+		AstIntegerLiteral *literal = ALLOC_NODE(AstIntegerLiteral, AST_INTEGER_LITERAL);
+		literal->value = to_u64(parser->previous_token.content);
+		literal->location = parser->previous_token.loc;
+
+		return literal;
 	} else if (kind == TOKEN_FLOAT) {
-		literal->numeric_kind = ANL_FLOAT;
+		die("Currently no float implemented in parser");
 	} else {
 		parse_error(parser, parser->current_token.loc, "Expected numerical expression.");
 	}
 
-	return literal;
+	return 0;
 }
 
 INTERNAL AstExpression *parse_identifier_expr(Parser *parser) {
@@ -400,6 +434,7 @@ enum {
 	PREC_TERM,
 	PREC_FACTOR,
 	PREC_UNARY,
+	PREC_RANGE,
 	PREC_CALL,
 	PREC_DOT,
 	PREC_PRIMARY
@@ -407,6 +442,58 @@ enum {
 INTERNAL AstNode *parse_statement(Parser *parser);
 INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence);
 INTERNAL AstExpression *parse_array_declaration(Parser *parser);
+
+INTERNAL AstNode *parse_type_declaration(Parser *parser, Token name) {
+	AstTypeDeclaration *decl = ALLOC_NODE(AstTypeDeclaration, AST_TYPE_DECLARATION);
+	decl->name = name.content;
+	decl->declaration.kind = TYPE_STRUCT;
+	decl->declaration.filename = parser->filename;
+	decl->declaration.location = name.loc;
+
+	consume(parser, TOKEN_KEYWORD_TYPE, "Missing keyword type.");
+	decl->location = parser->previous_token.loc;
+	if (match(parser, TOKEN_LEFT_BRACE)) {
+		decl->decl_kind = TYPE_DECL_STRUCT;
+
+		Token left_brace = parser->previous_token;
+
+		if (match(parser, TOKEN_RIGHT_BRACE)) {
+			parse_error(parser, parser->previous_token.loc, "Empty structs are currently not supported.");
+			return decl;
+		}
+
+		do {
+			TypeField field = {0};
+
+			consume(parser, TOKEN_IDENTIFIER, "Missing member name in declaration of type.");
+			field.name = parser->previous_token.content;
+			field.location = parser->previous_token.loc;
+
+			consume(parser, TOKEN_COLON, "Missing : in field declaration.");
+			field.type = parse_type_specifier(parser);
+
+			consume(parser, TOKEN_SEMICOLON, "Missing ; to end type field.");
+
+			append(&decl->declaration.fields, field);
+		} while (!current_token_is(parser, TOKEN_RIGHT_BRACE));
+
+		if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
+			parse_error(parser, left_brace.loc, "Missing } for type declaration.");
+			return decl;
+		}
+
+		consume(parser, TOKEN_RIGHT_BRACE, "Missing } to end declaration of type.");
+	} else if (match(parser, TOKEN_EQUAL)) {
+		decl->decl_kind = TYPE_DECL_BASIC;
+		decl->expr = parse_expression(parser, PREC_ASSIGNMENT);
+
+		consume(parser, TOKEN_SEMICOLON, "Missing ; .");
+	} else {
+		parse_error(parser, parser->current_token.loc, "Unknown declaration kind.");
+	}
+
+	return decl;
+}
 
 INTERNAL AstExpression *parse_reference(Parser *parser) {
 	AstReference *ref = ALLOC_NODE(AstReference, AST_REFERENCE);
@@ -433,6 +520,8 @@ INTERNAL u32 operator_precedence(u32 kind) {
 	case TOKEN_PLUS: return PREC_TERM;
 	case TOKEN_MINUS: return PREC_TERM;
 	case TOKEN_ASTERISK: return PREC_FACTOR;
+
+	case TOKEN_DOUBLE_DOT: return PREC_RANGE;
 	}
 
 	return PREC_NONE;
@@ -456,6 +545,16 @@ INTERNAL AstExpression *parse_binary_operator(Parser *parser, AstExpression *lhs
 	return bin;
 }
 
+INTERNAL AstExpression *parse_range_expression(Parser *parser, AstExpression *lhs) {
+	AstRange *range = ALLOC_NODE(AstRange, AST_RANGE);
+	range->location = parser->previous_token.loc;
+
+	range->start = lhs;
+	range->end = parse_expression(parser, PREC_RANGE + 1);
+
+	return range;
+}
+
 INTERNAL AstExpression *parse_grouping(Parser *parser) {
 	AstExpression *expr = 0;
 	consume(parser, TOKEN_LEFT_PARENTHESIS, "Expected ( .");
@@ -465,6 +564,16 @@ INTERNAL AstExpression *parse_grouping(Parser *parser) {
 	consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) .");
 
 	return expr;
+}
+
+INTERNAL AstExpression *parse_negation(Parser *parser) {
+	consume(parser, TOKEN_MINUS, "Missing - .");
+
+	AstNegate *negate = ALLOC_NODE(AstNegate, AST_NEGATE);
+	negate->expr = parse_expression(parser, PREC_UNARY);
+	negate->location = parser->previous_token.loc;
+
+	return negate;
 }
 
 INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
@@ -488,6 +597,10 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 		lhs = parse_reference(parser);
 	break;
 
+	case TOKEN_MINUS:
+		lhs = parse_negation(parser);
+	break;
+
 	case TOKEN_LEFT_PARENTHESIS:
 		lhs = parse_grouping(parser);
 	break;
@@ -506,6 +619,8 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 		case TOKEN_MINUS: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_SUB); } break;
 		case TOKEN_ASTERISK: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_MUL); } break;
 
+		case TOKEN_DOUBLE_DOT: { lhs = parse_range_expression(parser, lhs); } break;
+
 		default:
 			parse_error(parser, parser->previous_token.loc, "Unknown binary operator.");
 			advance_token(parser);
@@ -517,8 +632,7 @@ INTERNAL AstExpression *parse_expression(Parser *parser, u32 precedence) {
 
 INTERNAL AstNode *parse_variable_declaration(Parser *parser, Token name) {
 	AstVariableDeclaration *decl = ALLOC_NODE(AstVariableDeclaration, AST_VARIABLE_DECLARATION);
-	decl->identifier.name = name.content;
-	decl->identifier.location = name.loc;
+	decl->name = name.content;
 	decl->location = name.loc;
 
 	if (current_token_is(parser, TOKEN_IDENTIFIER)) {
@@ -535,9 +649,9 @@ INTERNAL AstNode *parse_variable_declaration(Parser *parser, Token name) {
 }
 
 INTERNAL AstNode *parse_function_declaration(Parser *parser, Token name) {
-	AstFuncitonDeclaration *decl = ALLOC_NODE(AstFuncitonDeclaration, AST_FUNCTION_DECLARATION);
-	decl->identifier.name = name.content;
-	decl->identifier.location = name.loc;
+	AstFunctionDeclaration *decl = ALLOC_NODE(AstFunctionDeclaration, AST_FUNCTION_DECLARATION);
+	decl->name = name.content;
+	decl->location = name.loc;
 
 	consume(parser, TOKEN_LEFT_PARENTHESIS, "Expected ( .");
 	decl->location = parser->previous_token.loc;
@@ -547,30 +661,34 @@ INTERNAL AstNode *parse_function_declaration(Parser *parser, Token name) {
 			AstParameter param = {};
 			consume(parser, TOKEN_IDENTIFIER, "Identifier or ) expected");
 			param.name = parser->previous_token.content;
+			param.location = parser->previous_token.loc;
 
 			consume(parser, TOKEN_COLON, "Missing : after function parameter name.");
 			param.type = parse_type_specifier(parser);
+
+			append(&decl->params, param);
 		} while (match(parser, TOKEN_COMMA));
 
 		consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) in function declaration.");
 	}
 
 	if (match(parser, TOKEN_RIGHT_ARROW)) {
-		// TODO: muliple return types
-		append(&decl->return_types, parse_type_specifier(parser));
+		do {
+			append(&decl->return_types, parse_type_specifier(parser));
+		} while (match(parser, TOKEN_COMMA));
 	}
 
 	consume(parser, TOKEN_LEFT_BRACE, "Missing function body.");
 	Token left_brace = parser->previous_token;
 
-	do {
+	while (!match(parser, TOKEN_RIGHT_BRACE)) {
 		if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
 			parse_error(parser, left_brace.loc, "Missing } to end function body.");
 			return decl;
 		}
 
 		append(&decl->body.statements, parse_statement(parser));
-	} while (!match(parser, TOKEN_RIGHT_BRACE));
+	}
 
 	return decl;
 }
@@ -598,22 +716,28 @@ INTERNAL AstNode *parse_declaration(Parser *parser) {
 	consume(parser, TOKEN_IDENTIFIER, "Expected identifier for declaration.");
 	Token identifier = parser->previous_token;
 
-	if (match(parser, TOKEN_COLON)) {
+	if (match(parser, TOKEN_DOUBLE_COLON)) {
 		switch (parser->current_token.kind) {
-		case TOKEN_KEYWORD_STRUCT: {
-			return parse_struct_declaration(parser, identifier);
-		} break;
-
-		case TOKEN_IDENTIFIER:
-		case TOKEN_EQUAL: {
-			return parse_variable_declaration(parser, identifier);
+		case TOKEN_KEYWORD_TYPE: {
+			return parse_type_declaration(parser, identifier);
 		} break;
 
 		case TOKEN_LEFT_PARENTHESIS: {
 			return parse_function_declaration(parser, identifier);
 		} break;
+
+		default:
+			parse_error(parser, parser->current_token.loc, "Expected declaration.");
 		}
-		parse_error(parser, parser->current_token.loc, "Missing type specifier.");
+	} else if (match(parser, TOKEN_COLON)) {
+		switch (parser->current_token.kind) {
+		case TOKEN_IDENTIFIER:
+		case TOKEN_EQUAL: {
+			return parse_variable_declaration(parser, identifier);
+		} break;
+		}
+	} else {
+		parse_error(parser, parser->current_token.loc, "Missing : for declaration.");
 	}
 
 	return 0;
@@ -638,7 +762,14 @@ INTERNAL AstNode *parse_return(Parser *parser) {
 INTERNAL AstNode *parse_statement(Parser *parser) {
 	switch (parser->current_token.kind) {
 	case TOKEN_IDENTIFIER: {
-		return parse_declaration(parser);
+		Token token = peek_token(parser);
+		if (token.kind == TOKEN_DOUBLE_COLON || token.kind == TOKEN_COLON) {
+			return parse_declaration(parser);
+		} else {
+			AstExpression *expr = parse_expression(parser, PREC_ASSIGNMENT);
+			consume(parser, TOKEN_SEMICOLON, "Missing ; .");
+			return expr;
+		}
 	} break;
 
 	case TOKEN_KEYWORD_RETURN: {
@@ -658,6 +789,10 @@ INTERNAL void synchronize(Parser *parser) {
 		case TOKEN_RIGHT_BRACE: 
 		case TOKEN_SEMICOLON:
 			advance_token(parser);
+			goto END;
+		break;
+
+		case TOKEN_END_OF_INPUT:
 			goto END;
 		break;
 		}
@@ -731,13 +866,13 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 		print("Node type not set.");
 	} break;
 
-	case AST_STRUCT_DECLARATION:{
-		AstStructDeclaration *decl = (AstStructDeclaration*)node;
-		print("Declare struct: %S {", pr(decl->identifier.name));
+	case AST_TYPE_DECLARATION:{
+		AstTypeDeclaration *decl = (AstTypeDeclaration*)node;
+		print("Declare struct: %S {", pr(decl->name));
 
-		if (decl->members.size) print("%S: %S", pr(decl->members[0].name), pr(decl->members[0].type.name));
-		for (s32 i = 1; i < decl->members.size; i += 1) {
-			print(", %S: %S", pr(decl->members[i].name), pr(decl->members[i].type.name));
+		if (decl->declaration.fields.size) print("%S: %S", pr(decl->declaration.fields[0].name), pr(decl->declaration.fields[0].type.name));
+		for (s32 i = 1; i < decl->declaration.fields.size; i += 1) {
+			print(", %S: %S", pr(decl->declaration.fields[i].name), pr(decl->declaration.fields[i].type.name));
 		}
 
 		print("}\n");
@@ -745,15 +880,15 @@ INTERNAL void print_ast_node(AstNode *node, s32 depth) {
 
 	case AST_VARIABLE_DECLARATION: {
 		AstVariableDeclaration *decl = (AstVariableDeclaration*)node;
-		print("Declare variable: %S: %S", pr(decl->identifier.name), pr(decl->type.name));
+		print("Declare variable: %S: %S", pr(decl->name), pr(decl->type.name));
 		if (decl->type.array_size) print("[%d]", decl->type.array_size);
 		if (decl->type.pointer_depth) for (s32 i = 0; i < decl->type.pointer_depth; i += 1) print("*");
 		print("\n");
 	} break;
 
 	case AST_FUNCTION_DECLARATION: {
-		AstFuncitonDeclaration *decl = (AstFuncitonDeclaration*)node;
-		print("Declare function: %S with body:\n", pr(decl->identifier.name));
+		AstFunctionDeclaration *decl = (AstFunctionDeclaration*)node;
+		print("Declare function: %S with body:\n", pr(decl->name));
 
 		for (s32 i = 0; i < decl->body.statements.size; i += 1) {
 			print_ast_node(decl->body.statements[i], depth + 1);

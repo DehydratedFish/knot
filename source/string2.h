@@ -185,7 +185,7 @@ inline bool get(String *string, Type *value) {
 	string->data += size;
 	string->size -= size;
 
-	return false;
+	return true;
 }
 
 inline String copy(String *string) {
@@ -205,6 +205,18 @@ inline bool equal(String lhs, String rhs) {
 	}
 
 	return false;
+}
+
+inline Ordering compare(String lhs, String rhs) {
+	for (s32 i = 0; i != lhs.size && i != rhs.size; i += 1) {
+		if (lhs[i] < rhs[i]) return CMP_LESSER;
+		if (lhs[i] > rhs[i]) return CMP_GREATER;
+	}
+
+	s32 order = lhs.size - rhs.size;
+	if (order < 0) return CMP_LESSER;
+	else if (order > 0) return CMP_GREATER;
+	else return CMP_EQUAL;
 }
 
 // NOTE: simple djb2 hash
@@ -228,12 +240,6 @@ inline PrintRef pr(String ref) {
 	return {ref.data, ref.size};
 }
 
-
-// TODO: rename
-s64 convert_string_to_s64(u8 *buffer, s32 buffer_size);
-String convert_signed_to_string(u8 *buffer, s32 buffer_size, s64 number, s32 base, b32 uppercase, b32 keep_sign);
-s32 convert_unsigned_to_string(u8 *buffer, s32 buffer_size, u64 number, s32 base, b32 uppercase);
-void convert_to_ptr_string(u8 *buffer, s32 buffer_size, void *address);
 
 #endif // INCLUDE_GUARD_STRING2_H
 

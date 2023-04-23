@@ -1,8 +1,10 @@
 #include "platform.h"
 
 #include "knot.h"
+#include "io.h"
 #include "parser.h"
 #include "type_check.h"
+#include "bytecode.h"
 
 
 INTERNAL Array<DiagnosticMessage> Diagnostics;
@@ -24,7 +26,7 @@ String find_line(SourceLocation loc, String source) {
 	s32 length = loc.column;
 
 	s32 source_left = source.size - (loc.ptr - source.data);
-	for (; length < source_left && line_begin[length] != '\n' && line_begin[length] != '\r'; length += 1);
+	for (; source_left && line_begin[length] != '\n' && line_begin[length] != '\r'; length += 1, source_left -= 1);
 
 	return String(line_begin, length);
 }
@@ -39,15 +41,23 @@ s32 count_characters(String string, u8 c) {
 	return count;
 }
 
+
+PrintRef DiagnosticKindLookup[] = {
+	pr("Note:"),
+	pr("Warning:"),
+	pr("Error:"),
+};
+
 INTERNAL bool print_diagnostics(String source) {
+	bool encountered_errors = false;
+
 	if (Diagnostics.size) {
-		print("Encountered %d error(s).\n", Diagnostics.size);
 		for (s32 i = 0; i < Diagnostics.size; i += 1) {
 			DiagnosticMessage *diag = &Diagnostics[i];
 
 			String line = find_line(diag->location, source);
 			s32 tab_count = count_characters(line, '\t');
-			print("%S:%d:%d: %S\n", pr(diag->file), diag->location.line, diag->location.column, pr(diag->message));
+			print("%S %S:%d:%d: %S\n", DiagnosticKindLookup[diag->kind], pr(diag->file), diag->location.line, diag->location.column, pr(diag->message));
 			print("%S\n", pr(line));
 
 			// TODO: proper tab handling
@@ -56,20 +66,18 @@ INTERNAL bool print_diagnostics(String source) {
 				print(" ");
 			}
 			print("^\n\n");
+
+			if (diag->kind == DIAGNOSTIC_ERROR) encountered_errors = true;
 		}
-
-		print("Compiler finished with errors.\n");
-
-		return true;
 	}
 
-	return false;
+	return encountered_errors;
 }
 
 s32 application_main(Array<String> args) {
 	String file_to_parse;
 #if DEVELOPER
-	file_to_parse = "test.knot";
+	file_to_parse = "../examples/develop.knot";
 #else
 	if (args.size < 2) {
 		print("Missing source file in arguments to compiler.\n");
@@ -79,20 +87,29 @@ s32 application_main(Array<String> args) {
 	file_to_parse = args[1];
 #endif // DEVELOPER
 
+
 	String source = platform_read_entire_file(file_to_parse);
 	Parser parser = init_parser(file_to_parse, source);
 
 	AbstractSyntaxTree tree = parse_as_knot_code(&parser);
-	if (print_diagnostics(source)) return -1;
+	if (print_diagnostics(source)) {
+		print("Compiler finished with errors.");
+		return -1;
+	}
 
 	print("Type checking.\n");
 	type_check_ast(&tree);
-	if (print_diagnostics(source)) return -1;
+	if (print_diagnostics(source)) {
+		print("Compiler finished with errors.");
+		return -1;
+	}
 
 	print("\nCompiler finished.\n");
 
 	//print("Contructed following AST:\n\n");
 	//print_ast(&tree);
+	
+	//convert_to_bytecode(&tree);
 
 	return 0;
 }

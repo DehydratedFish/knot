@@ -16,14 +16,17 @@ enum {
 	TOKEN_FLOAT,
 
 	TOKEN_DOT,
+	TOKEN_DOUBLE_DOT,
 	TOKEN_COMMA,
 	TOKEN_EQUAL,
 	TOKEN_COLON,
+	TOKEN_DOUBLE_COLON,
 	TOKEN_SEMICOLON,
 	TOKEN_PLUS,
 	TOKEN_MINUS,
 	TOKEN_ASTERISK,
 	TOKEN_AMPERSAND,
+	TOKEN_SLASH,
 
 	TOKEN_RIGHT_ARROW,
 
@@ -34,7 +37,7 @@ enum {
 	TOKEN_LEFT_BRACKET,
 	TOKEN_RIGHT_BRACKET,
 
-	TOKEN_KEYWORD_STRUCT,
+	TOKEN_KEYWORD_TYPE,
 	TOKEN_KEYWORD_RETURN,
 
 	TOKEN_UNKNOWN,
@@ -56,6 +59,9 @@ struct Parser {
 
 	Token previous_token;
 	Token current_token;
+
+	bool has_peek;
+	Token peek_token;
 
 	bool error_mode;
 };

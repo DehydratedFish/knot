@@ -26,6 +26,7 @@ void fire_assert(char const *msg, char const *func, char const *file, int line) 
 
 	print_stack_trace();
 
+	raise(SIGTRAP);
 	_exit(-1);
 }
 

@@ -10,53 +10,68 @@
 
 
 struct AstNode;
-struct TypeInfo;
+struct TypeField;
 
 
-struct Identifier {
-	String name;
+enum {
+	TYPE_UNDEFINED,
+	TYPE_INTEGER,
+	TYPE_FLOAT,
+	TYPE_RANGE,
+	TYPE_STRUCT,
+	TYPE_ENUM,
+};
+struct TypeDeclaration {
+	u32 kind;
+
+	String filename;
 	SourceLocation location;
+
+	bool is_signed;
+	s32 size;
+	u64 int_max;
+	s64 int_min;
+
+	Array<TypeField> fields;
+	// TODO: annotations
 };
 
-struct TypeSpecifier {
-	TypeInfo *type;
-	String name;
-	u32 array_size;
-	u8 pointer_depth;
+enum {
+	TYPE_FLAG_ARRAY = 0x01,
+	TYPE_FLAG_CONSTANT = 0x02,
+	TYPE_FLAG_RANGE = 0x04,
 };
 
-struct StructMember {
+struct TypeInfo {
+	TypeDeclaration *decl;
 	String name;
-	TypeSpecifier type;
+
+	u16 flags;
+	u16 pointer_depth;
+
+	s32 array_size;
+};
+
+struct TypeField {
+	String name;
+	TypeInfo type;
+	SourceLocation location;
 	s32 offset;
 };
 
 enum {
-	TYPE_BASIC,
-	TYPE_STRUCT,
-	TYPE_ENUM,
-};
-struct TypeInfo {
-	u32 kind;
-	u32 type_id;
-	// annotations
-	s32 member_count;
-	StructMember *members;
-};
-
-enum {
 	IDENTIFIER_UNDEFINED,
-	IDENTIFIER_CONSTANT,
 	IDENTIFIER_VARIABLE,
 	IDENTIFIER_TYPE,
 
 	IDENTIFIER_TYPE_COUNT
 };
-struct IdentifierInfo {
+struct Identifier {
 	u32 kind;
 
 	union {
-		TypeInfo type_info;
+		TypeDeclaration *decl;
+		TypeInfo *type;
 	};
 };
 
@@ -65,7 +80,7 @@ struct Scope {
 	Scope *parent;
 
 	Array<AstNode*> statements;
-	HashTable<String, IdentifierInfo, hash> symbols;
+	HashTable<String, Identifier, hash> symbols;
 };
 
 enum {
@@ -73,15 +88,18 @@ enum {
 
 	AST_REFERENCE,
 	AST_DEREFERENCE,
+	AST_NEGATE,
 
 	AST_IDENTIFIER,
-	AST_NUMERIC_LITERAL,
+	AST_INTEGER_LITERAL,
+	AST_FLOAT_LITERAL,
 
 	AST_BINARY_OPERATOR,
+	AST_RANGE,
 
 	AST_VARIABLE_DECLARATION,
 	AST_ARRAY_DECLARATION,
-	AST_STRUCT_DECLARATION,
+	AST_TYPE_DECLARATION,
 	AST_FUNCTION_DECLARATION,
 
 	AST_RETURN,
@@ -90,12 +108,12 @@ enum {
 };
 
 struct AstNode {
-	TypeSpecifier type;
 	SourceLocation location;
 	u32 kind;
 };
 
 struct AstExpression : AstNode {
+	TypeInfo type;
 };
 
 enum {
@@ -110,6 +128,13 @@ struct AstBinaryOperator : AstExpression {
 	AstExpression *rhs;
 };
 
+struct AstRange : AstExpression {
+	AstExpression *start;
+	AstExpression *end;
+
+	TypeDeclaration range_decl;
+};
+
 struct AstReference : AstExpression {
 	AstExpression *expr;
 };
@@ -118,13 +143,16 @@ struct AstDereference : AstExpression {
 	AstExpression *expr;
 };
 
-enum {
-	ANL_INTEGER,
-	ANL_FLOAT,
+struct AstNegate : AstExpression {
+	AstExpression *expr;
 };
-struct AstNumericLiteral : AstExpression {
-	String value;
-	u32 numeric_kind;
+
+struct AstIntegerLiteral : AstExpression {
+	u64 value;
+};
+
+struct AstFloatLiteral : AstExpression {
+	r64 value;
 };
 
 struct AstIdentifier : AstExpression {
@@ -136,16 +164,23 @@ struct AstArrayDeclaration : AstExpression {
 };
 
 struct AstVariableDeclaration : AstNode {
-	Identifier identifier;
+	String name;
+	TypeInfo type;
 	AstExpression *expr;
 };
 
-struct AstStructDeclaration : AstNode {
-	Identifier identifier;
-	Array<StructMember> members;
+enum {
+	TYPE_DECL_BASIC,
+	TYPE_DECL_STRUCT
+};
+struct AstTypeDeclaration : AstNode {
+	u32 decl_kind;
+	String name;
+	AstExpression *expr;
+	TypeDeclaration declaration;
 };
 
-struct AstParameter : AstNode {
+struct AstParameter : AstExpression {
 	String name;
 	u32 position;
 };
@@ -154,10 +189,10 @@ struct AstReturn : AstNode {
 	Array<AstExpression*> values;
 };
 
-struct AstFuncitonDeclaration : AstNode {
-	Identifier identifier;
+struct AstFunctionDeclaration : AstNode {
+	String name;
 	Array<AstParameter> params;
-	Array<TypeSpecifier> return_types;
+	Array<TypeInfo> return_types;
 
 	Scope body;
 };
@@ -166,6 +201,13 @@ struct AbstractSyntaxTree {
 	String filename;
 	Scope global_scope;
 	Scope *current_scope;
+
+	AstFunctionDeclaration *current_function;
+};
+
+struct Environment {
+
+	Array<Identifier*> exported_symbols;
 };
 
 #endif // INCLUDE_GUARD_KNOT_AST_H

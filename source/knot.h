@@ -28,5 +28,6 @@ struct DiagnosticMessage {
 
 void report_diagnostic(u32 kind, SourceLocation location, String file, String message);
 
+
 #endif // INCLUDE_GUARD_KNOT_H
 
