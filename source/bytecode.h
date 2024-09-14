@@ -15,7 +15,5 @@ enum BytecodeInstruction {
 };
 
 
-void convert_to_bytecode(AbstractSyntaxTree *tree);
-
 #endif // INCLUDE_GUARD_KNOT_BYTECODE_H
 

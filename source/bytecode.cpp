@@ -1,5 +1,7 @@
 #include "bytecode.h"
 
+#include "platform.h" // NOTE: for print as of now
+
 
 struct Interpreter {
 	String code;
@@ -32,7 +34,7 @@ void node_to_bytecode(Interpreter *interpreter, AstNode *node) {
 	case AST_INTEGER_LITERAL: {
 		AstIntegerLiteral *literal = (AstIntegerLiteral*)node;
 
-		push_s32(interpreter, literal->value);
+		push_s32(interpreter, (s32)literal->value);
 	} break;
 
 #if 0
@@ -77,15 +79,15 @@ void run(Interpreter *interpreter) {
 	}
 }
 
-void convert_to_bytecode(AbstractSyntaxTree *tree) {
-	Interpreter interpreter = {};
-	prealloc(&interpreter.code, MEGABYTES(4));
-
-	for (s32 i = 0; i < tree->global_scope.statements.size; i += 1) {
-		node_to_bytecode(&interpreter, tree->global_scope.statements[i]);
-	}
-
-
-	run(&interpreter);
-}
+//void convert_to_bytecode(AbstractSyntaxTree *tree) {
+//	Interpreter interpreter = {};
+//	prealloc(&interpreter.code, MEGABYTES(4));
+//
+//	for (s32 i = 0; i < tree->global_scope.nodes.size; i += 1) {
+//		node_to_bytecode(&interpreter, tree->global_scope.nodes[i]);
+//	}
+//
+//
+//	run(&interpreter);
+//}
 

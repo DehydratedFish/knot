@@ -1,577 +1,733 @@
 #include "type_check.h"
+#include "ast.h"
+#include "definitions.h"
+#include "knot.h"
+#include "memory.h"
 
-#include "platform.h"
-#include "hash_table.h"
 
+#define CHECK_TYPING(expr) { TypingResult expr_result = (expr); if (expr_result != TYPING_CORRECT) return expr_result; }
+
+enum TypingResult {
+    TYPING_ERROR,
+    TYPING_UNDECLARED_IDENTIFIER,
+    TYPING_CORRECT,
+};
+
+INTERNAL TypingResult infer(Environment *env, AstNode *node);
+INTERNAL TypingResult check(Environment *env, AstNode *node, Type *expected);
 
 enum {
-	TYPE_ID_UNDEFINED,
+    TYPE_ID_UNDEFINED,
 
-	TYPE_ID_BUILTIN_S8,
-	TYPE_ID_BUILTIN_U8,
+    TYPE_ID_BUILTIN_S8,
+    TYPE_ID_BUILTIN_U8,
 
-	TYPE_ID_BUILTIN_S16,
-	TYPE_ID_BUILTIN_U16,
+    TYPE_ID_BUILTIN_S16,
+    TYPE_ID_BUILTIN_U16,
 
-	TYPE_ID_BUILTIN_S32,
-	TYPE_ID_BUILTIN_U32,
+    TYPE_ID_BUILTIN_S32,
+    TYPE_ID_BUILTIN_U32,
 
-	TYPE_ID_BUILTIN_S64,
-	TYPE_ID_BUILTIN_U64,
+    TYPE_ID_BUILTIN_S64,
+    TYPE_ID_BUILTIN_U64,
 
-	TYPE_ID_BUILTIN_R32,
-	TYPE_ID_BUILTIN_R64,
+    TYPE_ID_BUILTIN_R32,
+    TYPE_ID_BUILTIN_R64,
 
-	TYPE_ID_BUILTIN_COUNT
+    TYPE_ID_BUILTIN_COUNT
 };
 
 INTERNAL u32 CurrentID = TYPE_ID_BUILTIN_COUNT;
 
 
-INTERNAL bool is_same_type(TypeInfo *lhs, TypeInfo *rhs) {
-	if (lhs->decl != rhs->decl) return false;
-	if (lhs->array_size != rhs->array_size) return false;
-	if (lhs->pointer_depth != rhs->pointer_depth) return false;
+INTERNAL bool is_same_type(Type *lhs, Type *rhs) {
+    if (lhs->decl != rhs->decl) return false;
+    if (lhs->array_size != rhs->array_size) return false;
+    if (lhs->pointer_depth != rhs->pointer_depth) return false;
 
-	return true;
+    return true;
 }
 
-INTERNAL bool convert_type_to(TypeInfo *expected, TypeInfo *info) {
-	switch (expected->decl->kind) {
-	case TYPE_INTEGER: {
-		if (info->decl->kind == TYPE_INTEGER) {
-			if (expected->array_size != info->array_size) return false;
-			if (expected->pointer_depth != info->pointer_depth) return false;
+INTERNAL bool convert_type_to(Type *expected, Type *info) {
+    switch (expected->kind) {
+        case TYPE_INTEGER: {
+            if (info->kind == TYPE_INTEGER) {
+                if (expected->array_size != info->array_size) return false;
+                if (expected->pointer_depth != info->pointer_depth) return false;
 
-			if (info->decl->int_min < expected->decl->int_min) return false;
-			if (info->decl->int_max > expected->decl->int_max) return false;
+                if (info->as.integer.lower_bound < expected->as.integer.lower_bound) return false;
+                if (info->as.integer.upper_bound > expected->as.integer.upper_bound) return false;
 
-			*info = *expected;
+                *info = *expected;
 
-			return true;
-		}
-	} break;
-	}
+                return true;
+            }
+        } break;
+    }
 
-	return false;
+    return false;
 }
 
-INTERNAL Identifier make_builtin_type(TypeDeclaration *decl) {
-	Identifier identifier = {};
-	identifier.kind = IDENTIFIER_TYPE;
 
-	identifier.decl = decl;
+INTERNAL s32 calculate_integer_size(IntegerType *integer) {
+    assert(integer->lower_bound < 0 || (u64)integer->lower_bound < integer->upper_bound);
 
-	return identifier;
-}
+    s32 bytes = 0;
+    if (integer->is_signed) {
+        assert(integer->upper_bound <= 9223372036854775807);
 
-INTERNAL TypeDeclaration Type_s8  = {TYPE_INTEGER, {}, {}, true, 1, 127, -128};
-INTERNAL TypeDeclaration Type_s16 = {TYPE_INTEGER, {}, {}, true, 2, 32767, -32768};
-INTERNAL TypeDeclaration Type_s32 = {TYPE_INTEGER, {}, {}, true, 4, 2147483647, -2147483648};
-INTERNAL TypeDeclaration Type_s64 = {TYPE_INTEGER, {}, {}, true, 8, 9223372036854775807, -1 - 9223372036854775807};
+        if (integer->lower_bound >= -128 && integer->upper_bound <= 127) {
+            bytes = 1;
+        } else if (integer->lower_bound >= -32768 && integer->upper_bound <= 32767) {
+            bytes = 2;
+        } else if (integer->lower_bound >= -2147483648 && integer->upper_bound <= 2147483647) {
+            bytes = 4;
+        } else {
+            bytes = 8;
+        }
+    } else {
+        assert(integer->lower_bound >= 0);
 
-INTERNAL TypeDeclaration Type_u8  = {TYPE_INTEGER, {}, {}, false, 1, 255, 0};
-INTERNAL TypeDeclaration Type_u16 = {TYPE_INTEGER, {}, {}, false, 2, 65535, 0};
-INTERNAL TypeDeclaration Type_u32 = {TYPE_INTEGER, {}, {}, false, 4, 4294967295, 0};
-INTERNAL TypeDeclaration Type_u64 = {TYPE_INTEGER, {}, {}, false, 8, 18446744073709551615ULL, 0};
+        if (integer->upper_bound <= 127) {
+            bytes = 1;
+        } else if (integer->upper_bound <= 32767) {
+            bytes = 2;
+        } else if (integer->upper_bound <= 2147483647) {
+            bytes = 4;
+        } else {
+            bytes = 8;
+        }
+    }
 
-
-INTERNAL TypeInfo TypeInfo_s8  = {&Type_s8,  String("s8")};
-INTERNAL TypeInfo TypeInfo_s16 = {&Type_s16, String("s16")};
-INTERNAL TypeInfo TypeInfo_s32 = {&Type_s32, String("s32")};
-INTERNAL TypeInfo TypeInfo_s64 = {&Type_s64, String("s64")};
-
-INTERNAL TypeInfo TypeInfo_u8  = {&Type_u8,  String("u8")};
-INTERNAL TypeInfo TypeInfo_u16 = {&Type_u16, String("u16")};
-INTERNAL TypeInfo TypeInfo_u32 = {&Type_u32, String("u32")};
-INTERNAL TypeInfo TypeInfo_u64 = {&Type_u64, String("u64")};
-
-
-INTERNAL void init_builtin_types(AbstractSyntaxTree *tree) {
-	init(&tree->global_scope.symbols, 256);
-
-	insert(&tree->global_scope.symbols, String("s8"),  make_builtin_type(&Type_s8));
-	insert(&tree->global_scope.symbols, String("s16"), make_builtin_type(&Type_s16));
-	insert(&tree->global_scope.symbols, String("s32"), make_builtin_type(&Type_s32));
-	insert(&tree->global_scope.symbols, String("s64"), make_builtin_type(&Type_s64));
-
-	insert(&tree->global_scope.symbols, String("u8"),  make_builtin_type(&Type_u8));
-	insert(&tree->global_scope.symbols, String("u16"), make_builtin_type(&Type_u16));
-	insert(&tree->global_scope.symbols, String("u32"), make_builtin_type(&Type_u32));
-	insert(&tree->global_scope.symbols, String("u64"), make_builtin_type(&Type_u64));
-
-	//insert(&tree->global_scope.symbols, String("r32"), make_builtin_type(TYPE_ID_BUILTIN_R32));
-	//insert(&tree->global_scope.symbols, String("r64"), make_builtin_type(TYPE_ID_BUILTIN_R64));
+    return bytes;
 }
 
 INTERNAL Identifier *resolve_identifier(Scope *scope, String name) {
-	Scope *search = scope;
-
-	Identifier *identifier = find(&search->symbols, name);
-	while (!identifier && search->parent) {
-		search = search->parent;
-		identifier = find(&search->symbols, name);
-	}
-
-	return identifier;
-}
-
-u32 const IDENTIFIER_NOT_FOUND  = 0x01;
-u32 const IDENTIFIER_NOT_A_TYPE = 0x02;
-INTERNAL u32 fill_type_info(TypeInfo *info, Scope *scope) {
-	Scope *search = scope;
-
-	Identifier *identifier = find(&search->symbols, info->name);
-	while (!identifier && search->parent) {
-		search = search->parent;
-		identifier = find(&search->symbols, info->name);
-	}
-
-	if (identifier == 0) return IDENTIFIER_NOT_FOUND;
-
-	if (identifier->kind == IDENTIFIER_TYPE) {
-		info->decl = identifier->decl;
-		return 0;
-	}
-
-	return IDENTIFIER_NOT_A_TYPE;
-}
-
-INTERNAL TypeDeclaration *find_type_declaration(Scope *scope, String name) {
-	Scope *search = scope;
-
-	Identifier *identifier = find(&search->symbols, name);
-	while (!identifier && search->parent) {
-		search = search->parent;
-		identifier = find(&search->symbols, name);
-	}
-
-	if (identifier == 0) return 0;
-
-	if (identifier->kind == IDENTIFIER_TYPE) {
-		return identifier->decl;
-	}
-
-	return 0;
-}
-
-INTERNAL void push_scope(AbstractSyntaxTree *tree, Scope *scope) {
-	scope->parent = tree->current_scope;
-	tree->current_scope = scope;
-}
-
-INTERNAL void pop_scope(AbstractSyntaxTree *tree) {
-	assert(tree->current_scope->parent);
-
-	tree->current_scope = tree->current_scope->parent;
-}
-
-INTERNAL bool declared_as_type(Scope *scope, String name) {
-	Scope *search = scope;
-
-	Identifier *identifier = find(&search->symbols, name);
-	while (!identifier && search->parent) {
-		search = search->parent;
-		identifier = find(&search->symbols, name);
-	}
-
-	if (!identifier) {
-		return false;
-	}
-
-	if (identifier->kind != IDENTIFIER_TYPE) {
-		return false;
-	}
-
-	return true;
-}
-
-INTERNAL bool declare(Scope *scope, String name) {
-	Identifier *found = find(&scope->symbols, name);
-	if (found) return false;
-
-	insert(&scope->symbols, name, {});
-
-	return true;
-}
-
-INTERNAL void define(Scope *scope, String name, Identifier ident) {
-	Identifier *found = find(&scope->symbols, name);
-	if (!found) {
-		insert(&scope->symbols, name, ident);
-	} else {
-		*found = ident;
-	}
-}
-
-INTERNAL Identifier make_identifier(TypeInfo *info) {
-	Identifier ident = {};
-	ident.kind = IDENTIFIER_VARIABLE;
-	ident.type = info;
-
-	return ident;
-}
-
-INTERNAL bool check(AbstractSyntaxTree *tree, AstNode *node, TypeInfo *expected);
-INTERNAL bool infer(AbstractSyntaxTree *tree, AstNode *node) {
-	switch (node->kind) {
-	case AST_ERROR: {
-		print("Node type not set.");
-	} break;
-
-	case AST_INTEGER_LITERAL: {
-		AstIntegerLiteral *literal = (AstIntegerLiteral*)node;
-
-		if (literal->value < 2147483648) {
-			literal->type = TypeInfo_s32;
-		} else if (literal->value < 9223372036854775807) {
-			literal->type = TypeInfo_s64;
-		} else {
-			literal->type = TypeInfo_u64;
-		}
-
-		literal->type.flags |= TYPE_FLAG_CONSTANT;
-
-		return true;
-	} break;
-
-	case AST_IDENTIFIER: {
-		AstIdentifier *ident = (AstIdentifier*)node;
-
-		Identifier *identifier = resolve_identifier(tree->current_scope, ident->name);
-		if (!identifier) {
-			report_diagnostic(DIAGNOSTIC_ERROR, ident->location, tree->filename, format("Undeclared identifier %S.", pr(ident->name)));
-			return false;
-		}
-		if (identifier->kind == IDENTIFIER_TYPE) {
-			report_diagnostic(DIAGNOSTIC_ERROR, ident->location, tree->filename, format("Identifier %S is a type.", pr(ident->name)));
-			return false;
-		}
-
-		ident->type = *identifier->type;
-
-		return true;
-	} break;
-
-	case AST_RANGE: {
-		AstRange *range = (AstRange*)node;
-
-		if (!infer(tree, range->start)) return false;
-		if (!infer(tree, range->end)) return false;
-
-		if (range->start->type.decl->kind != TYPE_INTEGER) {
-			report_diagnostic(DIAGNOSTIC_ERROR, range->start->location, tree->filename, "Expression is not an integer.");
-		}
-
-		if (range->end->type.decl->kind != TYPE_INTEGER) {
-			report_diagnostic(DIAGNOSTIC_ERROR, range->start->location, tree->filename, "Expression is not an integer.");
-		}
-
-		if (range->start->type.flags & TYPE_FLAG_CONSTANT && range->end->type.flags & TYPE_FLAG_CONSTANT) {
-			range->type.flags |= TYPE_FLAG_CONSTANT;
-		}
-
-		range->type.name = "<Range>"; // TODO: make proper range type
-		range->type.flags |= TYPE_FLAG_RANGE;
-	} break;
-
-	case AST_VARIABLE_DECLARATION: {
-		AstVariableDeclaration *decl = (AstVariableDeclaration*)node;
-
-		if (!declare(tree->current_scope, decl->name)) {
-			report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, "Identifier already defined.");
-			return false;
-		}
-
-		if (decl->type.name.size == 0) {
-			if (decl->expr == 0) {
-				report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, "Can't infer type without expression.");
-				return false;
-			}
-			if (!infer(tree, decl->expr)) return false;
-			decl->type = decl->expr->type;
-		} else if (decl->expr) {
-			u32 status = fill_type_info(&decl->type, tree->current_scope);
-			if (status == IDENTIFIER_NOT_FOUND) {
-				report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, format("Identifier %S is not declared.", pr(decl->type.name)));
-				return false;
-			} else if (status == IDENTIFIER_NOT_A_TYPE) {
-				report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, format("Identifier %S is not a type.", pr(decl->type.name)));
-				return false;
-			}
-			check(tree, decl->expr, &decl->type);
-		}
-
-		Identifier ident = {0};
-		ident.kind = IDENTIFIER_VARIABLE;
-		ident.type = &decl->type;
-
-		define(tree->current_scope, decl->name, ident);
-
-		return true;
-	} break;
-
-	case AST_TYPE_DECLARATION: {
-		AstTypeDeclaration *decl = (AstTypeDeclaration*)node;
-
-		if (!declare(tree->current_scope, decl->name)) {
-			report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, "Identifier already defined.");
-			return false;
-		}
-
-		declare(tree->current_scope, decl->name);
-
-		if (decl->decl_kind == TYPE_DECL_STRUCT) {
-			decl->declaration.kind = TYPE_STRUCT;
-			decl->declaration.filename = tree->filename;
-			decl->declaration.location = decl->location;
-
-			for (s32 i = 0; i < decl->declaration.fields.size; i += 1) {
-				TypeField *field = &decl->declaration.fields[i];
-
-				u32 status = fill_type_info(&field->type, tree->current_scope);
-				if (status == IDENTIFIER_NOT_FOUND) {
-					report_diagnostic(DIAGNOSTIC_ERROR, field->location, tree->filename, format("Identifier %S is not declared.", pr(field->type.name)));
-					return false;
-				} else if (status == IDENTIFIER_NOT_A_TYPE) {
-					report_diagnostic(DIAGNOSTIC_ERROR, field->location, tree->filename, format("Identifier %S is not a type.", pr(field->type.name)));
-					return false;
-				}
-
-				// TODO: fill offset
-			}
-			// TODO: calculate size
-		} else if (decl->decl_kind == TYPE_DECL_BASIC) {
-			assert(decl->expr);
-
-			if (decl->expr->kind == AST_RANGE) {
-				AstRange *range = (AstRange*)decl->expr;
-				infer(tree, range);
-
-				if (!(range->type.flags & TYPE_FLAG_CONSTANT)) {
-					report_diagnostic(DIAGNOSTIC_ERROR, decl->expr->location, tree->filename, "Range must be constant.");
-					return false;
-				}
-			} else {
-				report_diagnostic(DIAGNOSTIC_ERROR, decl->expr->location, tree->filename, "Can't declare type from expression.");
-			}
-		}
-
-		Identifier ident = {};
-		ident.kind = IDENTIFIER_TYPE;
-		ident.decl = &decl->declaration;
-
-		define(tree->current_scope, decl->name, ident);
-
-		return true;
-	} break;
-
-	case AST_FUNCTION_DECLARATION: {
-		AstFunctionDeclaration *decl = (AstFunctionDeclaration*)node;
-
-		if (find(&tree->current_scope->symbols, decl->name)) {
-			report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, format("Identifier %S already defined.", pr(decl->name)));
-			return false;
-		}
-
-		push_scope(tree, &decl->body);
-		if (tree->current_function) {
-			report_diagnostic(DIAGNOSTIC_ERROR, decl->location, tree->filename, "Nested functions not allowed.");
-			return false;
-		}
-
-		tree->current_function = decl;
-
-		for (s32 i = 0; i < decl->params.size; i += 1) {
-			AstParameter *param = &decl->params[i];
-
-			if (!declared_as_type(tree->current_scope, param->type.name)) {
-				report_diagnostic(DIAGNOSTIC_ERROR, param->location, tree->filename, format("Identifier %S is not a type.", pr(param->type.name)));
-				return false;
-			}
-
-			define(tree->current_scope, param->name, make_identifier(&param->type));
-		}
-
-		for (s32 i = 0; i < decl->body.statements.size; i += 1) {
-			infer(tree, decl->body.statements[i]);
-		}
-
-		tree->current_function = 0;
-		pop_scope(tree);
-
-		return true;
-	} break;
-
-	case AST_RETURN: {
-		AstReturn *ret = (AstReturn*)node;
-		assert(tree->current_function);
-		AstFunctionDeclaration *func = tree->current_function;
-
-		if (ret->values.size != func->return_types.size) {
-			report_diagnostic(DIAGNOSTIC_ERROR, ret->location, tree->filename, "Return types mismatch.");
-			return false;
-		}
-
-		for (s32 i = 0; i < func->return_types.size; i += 1) {
-			TypeInfo *ret_type = &func->return_types[i];
-
-			u32 status = fill_type_info(ret_type, tree->current_scope);
-			if (status == IDENTIFIER_NOT_FOUND) {
-				report_diagnostic(DIAGNOSTIC_ERROR, func->location, tree->filename, format("Identifier %S is not declared.", pr(ret_type->name)));
-				return false;
-			} else if (status == IDENTIFIER_NOT_A_TYPE) {
-				report_diagnostic(DIAGNOSTIC_ERROR, func->location, tree->filename, format("Identifier %S is not a type.", pr(ret_type->name)));
-				return false;
-			}
-
-			if (!declared_as_type(tree->current_scope, ret_type->name)) {
-				report_diagnostic(DIAGNOSTIC_ERROR, func->location, tree->filename, format("Identifier %S is not a type.", pr(ret_type->name)));
-				return false;
-			}
-
-			check(tree, ret->values[i], ret_type);
-		}
-
-		return true;
-	} break;
-
-	case AST_BINARY_OPERATOR: {
-		AstBinaryOperator *op = (AstBinaryOperator*)node;
-
-		if (!infer(tree, op->lhs)) return false;
-		if (!infer(tree, op->rhs)) return false;
-
-		if (!is_same_type(&op->lhs->type, &op->rhs->type)) {
-			if (!convert_type_to(&op->lhs->type, &op->rhs->type)) {
-				report_diagnostic(DIAGNOSTIC_ERROR, op->location, tree->filename, format("Can't convert %S to %S.", pr(op->lhs->type.name), pr(op->rhs->type.name)));
-				return false;
-			}
-		}
-	} break;
-
-	default:
-		report_diagnostic(DIAGNOSTIC_ERROR, node->location, tree->filename, format("Can't infer ast node with type %d\n", node->kind));
-	}
-
-	return false;
-}
-
-INTERNAL bool check(AbstractSyntaxTree *tree, AstNode *node, TypeInfo *expected) {
-	switch (node->kind) {
-	case AST_ERROR: {
-		print("Node type not set.");
-	} break;
-
-	case AST_INTEGER_LITERAL: {
-		AstIntegerLiteral *literal = (AstIntegerLiteral*)node;
-
-		if (expected->decl->kind != TYPE_INTEGER) {
-			report_diagnostic(DIAGNOSTIC_ERROR, literal->location, tree->filename, format("Can't convert integer literal to type %S.\n", pr(expected->name)));
-			return false;
-		}
-		if (literal->value <= expected->decl->int_max) {
-			literal->type = *expected;
-		} else {
-			report_diagnostic(DIAGNOSTIC_ERROR, literal->location, tree->filename, "Literal does not fit into type.\n");
-			return false;
-		}
-	} break;
-
-	case AST_IDENTIFIER: {
-		AstIdentifier *identifier = (AstIdentifier*)node;
-
-		Identifier *ident = find(&tree->current_scope->symbols, identifier->name);
-		if (ident == 0) {
-			report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Undeclared identifier %S.", pr(identifier->name)));
-			return false;
-		}
-
-		if (ident->kind != IDENTIFIER_VARIABLE) {
-			report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Identifier %S is not a value or constant.", pr(identifier->name)));
-			return false;
-		}
-
-		u32 status = fill_type_info(ident->type, tree->current_scope);
-		if (status == IDENTIFIER_NOT_FOUND) {
-			report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Identifier %S is not declared.", pr(ident->type->name)));
-			return false;
-		} else if (status == IDENTIFIER_NOT_A_TYPE) {
-			report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Identifier %S is not a type.", pr(ident->type->name)));
-			return false;
-		}
-
-		if (!declared_as_type(tree->current_scope, ident->type->name)) {
-			report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Identifier %S is not a type.", pr(ident->type->name)));
-			return false;
-		}
-
-
-		if (!is_same_type(expected, ident->type)) {
-			if (!convert_type_to(expected, ident->type)) {
-				report_diagnostic(DIAGNOSTIC_ERROR, identifier->location, tree->filename, format("Can't convert %S to %S.", pr(expected->name), pr(ident->type->name)));
-				return false;
-			}
-		}
-
-		return true;
-	} break;
-
-	case AST_ARRAY_DECLARATION: {
-		AstArrayDeclaration *array = (AstArrayDeclaration*)node;
-
-		if (!(expected->flags & TYPE_FLAG_ARRAY)) {
-			report_diagnostic(DIAGNOSTIC_ERROR, array->location, tree->filename, "Can't assign array to scalar value.");
-			return false;
-		}
-		if (expected->array_size && expected->array_size != array->elements.size) {
-			report_diagnostic(DIAGNOSTIC_ERROR, array->location, tree->filename, "Array size mismatch.");
-			return false;
-		}
-
-		TypeInfo element_type = *expected;
-		element_type.array_size = 0;
-
-		for (s32 i = 0; i < array->elements.size; i += 1) {
-			check(tree, array->elements[i], &element_type);
-		}
-	} break;
-
-	case AST_REFERENCE: {
-		AstReference *ref = (AstReference*)node;
-
-		if (expected->pointer_depth == 0) {
-			report_diagnostic(DIAGNOSTIC_ERROR, ref->location, tree->filename, "Can't assign reference to non pointer type.");
-		}
-		TypeInfo ptr = *expected;
-		ptr.pointer_depth -= 1;
-
-		return check(tree, ref->expr, &ptr);
-	} break;
-
-	case AST_BINARY_OPERATOR: {
-		AstBinaryOperator *op = (AstBinaryOperator*)node;
-
-		check(tree, op->lhs, expected);
-		check(tree, op->rhs, expected);
-
-		// TODO: check if types can be used with the operator
-	} break;
-
-	default:
-		report_diagnostic(DIAGNOSTIC_ERROR, node->location, tree->filename, format("Can't check ast node with type %d\n", node->kind));
-	}
-
-	return false;
+    Scope *search = scope;
+
+    Identifier *identifier = find(&search->symbols, name);
+    while (identifier->kind == IDENTIFIER_UNDEFINED && search->parent) {
+        search = search->parent;
+        identifier = find(&search->symbols, name);
+    }
+
+    return identifier;
 }
 
 
-void type_check_ast(AbstractSyntaxTree *tree) {
-	init_builtin_types(tree);
-	tree->current_scope = &tree->global_scope;
+INTERNAL Type BuiltinTypeS8;
+INTERNAL Type BuiltinTypeS16;
+INTERNAL Type BuiltinTypeS32;
+INTERNAL Type BuiltinTypeS64;
 
-	for (s32 i = 0; i < tree->global_scope.statements.size; i += 1) {
-		infer(tree, tree->global_scope.statements[i]);
-	}
+INTERNAL Type BuiltinTypeU8;
+INTERNAL Type BuiltinTypeU16;
+INTERNAL Type BuiltinTypeU32;
+INTERNAL Type BuiltinTypeU64;
+
+INTERNAL Type BuiltinTypeString;
+
+INTERNAL Type make_builtin_integer_type(String name, IntegerType int_type) {
+    Type type = {};
+    type.name = name;
+    type.kind = TYPE_INTEGER;
+    type.size_of    = calculate_integer_size(&int_type);
+    type.as.integer = int_type;
+
+    return type;
+}
+
+INTERNAL Type make_builtin_string_type() {
+    Type type = {};
+    type.name = "string";
+    type.kind = TYPE_STRING;
+
+    return type;
+}
+
+INTERNAL b32 declare_symbol(Environment *env, AstIdentifier *symbol, Type *type, b32 is_variable) {
+    Identifier *ident = resolve_identifier(env->current_scope, symbol->name);
+    if (ident->kind != IDENTIFIER_UNDEFINED) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, symbol->location, format("Identifier %S already defined.", symbol->name));
+
+        return false;
+    }
+
+    ident->name = symbol->name;
+    ident->type = type;
+    if (is_variable) {
+        ident->kind = IDENTIFIER_VARIABLE;
+    } else {
+        ident->kind = IDENTIFIER_CONSTANT;
+    }
+
+    for (s64 i = 0; i < env->undeclared_identifiers.size; i += 1) {
+        if (env->undeclared_identifiers[i].name == symbol->name) {
+            infer(env, env->undeclared_identifiers[i].node);
+            remove(env->undeclared_identifiers, i);
+
+            i -= 1;
+        }
+    }
+
+    return true;
+}
+
+INTERNAL b32 declare_symbol(Environment *env, AstIdentifier *symbol, AstNode *node, b32 is_variable) {
+    Identifier *ident = resolve_identifier(env->current_scope, symbol->name);
+    if (ident->kind != IDENTIFIER_UNDEFINED) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, symbol->location, format("Identifier %S already defined.", symbol->name));
+
+        return false;
+    }
+
+    ident->name = symbol->name;
+
+    if (node->kind == AST_STRUCT) {
+        assert(is_variable == false);
+        ident->kind = IDENTIFIER_TYPE;
+        ident->type = &node->type;
+    } else {
+        if (is_variable) {
+            ident->kind = IDENTIFIER_VARIABLE;
+            ident->type = &node->type;
+        } else {
+            ident->kind = IDENTIFIER_CONSTANT;
+            ident->type = &node->type;
+        }
+    }
+
+    for (s64 i = 0; i < env->undeclared_identifiers.size; i += 1) {
+        if (env->undeclared_identifiers[i].name == symbol->name) {
+            infer(env, env->undeclared_identifiers[i].node);
+            remove(env->undeclared_identifiers, i);
+
+            i -= 1;
+        }
+    }
+
+    return true;
+}
+
+// TODO: Do proper parse error.
+INTERNAL b32 declare_type(Environment *env, Type *type) {
+    Identifier *ident = find(&env->current_scope->symbols, type->name);
+    assert(ident->kind == IDENTIFIER_UNDEFINED);
+
+    ident->name = type->name;
+    ident->kind = IDENTIFIER_TYPE;
+    ident->type = type;
+    
+    return true;
+}
+
+INTERNAL void init_builtin_types(Environment *env) {
+    BuiltinTypeS8  = make_builtin_integer_type("s8" , {true, 127, -128});
+    BuiltinTypeS16 = make_builtin_integer_type("s16", {true, 32767, -32768});
+    BuiltinTypeS32 = make_builtin_integer_type("s32", {true, 2147483647, -2147483648});
+    BuiltinTypeS64 = make_builtin_integer_type("s64", {true, 9223372036854775807, (-1 - 9223372036854775807)});
+
+    BuiltinTypeU8  = make_builtin_integer_type("u8" , {false, 255, 0});
+    BuiltinTypeU16 = make_builtin_integer_type("u16", {false, 65535, 0});
+    BuiltinTypeU32 = make_builtin_integer_type("u32", {false, 4294967295, 0});
+    BuiltinTypeU64 = make_builtin_integer_type("u64", {false, 18446744073709551615ULL, 0});
+
+    BuiltinTypeString = make_builtin_string_type();
+
+    declare_type(env, &BuiltinTypeS8);
+    declare_type(env, &BuiltinTypeS16);
+    declare_type(env, &BuiltinTypeS32);
+    declare_type(env, &BuiltinTypeS64);
+
+    declare_type(env, &BuiltinTypeU8);
+    declare_type(env, &BuiltinTypeU16);
+    declare_type(env, &BuiltinTypeU32);
+    declare_type(env, &BuiltinTypeU64);
+
+    declare_type(env, &BuiltinTypeString);
+}
+
+INTERNAL void push_scope(Environment *env, Scope *scope) {
+    scope->parent = env->current_scope;
+    env->current_scope = scope;
+}
+
+INTERNAL void pop_scope(Environment *env) {
+    assert(env->current_scope->parent);
+
+    env->current_scope = env->current_scope->parent;
+}
+
+
+INTERNAL void identifier_declared(Environment *env, String name) {
+    for (s64 i = 0; i < env->undeclared_identifiers.size; i += 1) {
+        UndeclaredIdentifier *it = &env->undeclared_identifiers[i];
+
+        if (it->name == name) {
+            TypingResult result = infer(env, it->node);
+
+            remove(env->undeclared_identifiers, i);
+            i -= 1;
+        }
+    }
+}
+
+INTERNAL TypingResult fill_type_info(Environment *env, Type *type, SourceLocation type_location) {
+    TypingResult result = TYPING_ERROR;
+
+    Identifier *ident = resolve_identifier(env->current_scope, type->name);
+    if (ident->kind == IDENTIFIER_TYPE) {
+        type->decl    = ident->type->decl;
+        type->size_of = ident->type->size_of;
+        type->kind    = ident->type->kind;
+        type->as      = ident->type->as;
+
+        result = TYPING_CORRECT;
+    } else if (ident->kind == IDENTIFIER_UNDEFINED) {
+        append(env->undeclared_identifiers, {type->name, type_location, env->parent_node});
+
+        result = TYPING_UNDECLARED_IDENTIFIER;
+    } else {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, type_location, format("Identifier %S is not a type.", type->name));
+    }
+
+    return result;
+}
+
+
+INTERNAL TypingResult infer_integer_literal(Environment *env, AstIntegerLiteral *literal) {
+    if (literal->value < 2147483648) {
+        literal->type = BuiltinTypeS32;
+    } else if (literal->value < 9223372036854775807) {
+        literal->type = BuiltinTypeS64;
+    } else {
+        literal->type = BuiltinTypeU64;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_identifier(Environment *env, AstIdentifier *ident) {
+    Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
+    if (identifier->kind == IDENTIFIER_UNDEFINED) {
+        append(env->undeclared_identifiers, {ident->name, ident->location, env->parent_node});
+
+        return TYPING_UNDECLARED_IDENTIFIER;
+    }
+
+    if (identifier->kind == IDENTIFIER_VARIABLE) {
+        ident->type = *identifier->type;
+    } else {
+        if (identifier->kind == IDENTIFIER_TYPE) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, ident->location, format("Identifier %S is a type.", ident->name));
+        } else {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, ident->location, format("Identifier %S is not a variable.", ident->name));
+        }
+
+        return TYPING_ERROR;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_string_literal(Environment *env, AstString *string) {
+    string->type = BuiltinTypeString;
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_call(Environment *env, AstCall *call) {
+    CHECK_TYPING(infer(env, call->functor));
+
+    Type *type = &call->functor->type;
+
+    if (type->kind != TYPE_LAMBDA) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, call->functor->location, "Expression is not callable. Currently only functions are possible to call.");
+
+        return TYPING_ERROR;
+    }
+
+    if (type->as.lambda.params.size != call->arguments.size) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, call->functor->location, format("Wrong number of arguments passed to call. Expected %d but got %d.", call->functor->type.as.lambda.params.size, call->arguments.size));
+
+        return TYPING_ERROR;
+    }
+
+    FOR (type->as.lambda.params, param) {
+        s64 i = FOR_INDEX(type->as.lambda.params, param);
+        TypingResult arg_result = infer(env, call->arguments[i]);
+        if (arg_result != TYPING_CORRECT) return arg_result;
+
+        if (!is_same_type(&param->type_spec.type, &call->arguments[i]->type)) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, call->arguments[i]->location, format("Argument %D expected to be of type %S but is %S.", i + 1, full_type_name(&type->as.lambda.params[i].type_spec.type), full_type_name(&call->arguments[i]->type)));
+
+            return TYPING_ERROR;
+        }
+    }
+
+    if (type->as.lambda.return_types.size == 0) {
+        call->type.kind = TYPE_NONE;
+    } else if (type->as.lambda.return_types.size == 1) {
+        call->type = type->as.lambda.return_types[0];
+    } else {
+        call->type.kind = TYPE_MULTI;
+        call->type.as.types = type->as.lambda.return_types;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL DArray<Field> ParameterBuilder;
+INTERNAL DArray<Type>  ReturnTypeBuilder;
+
+INTERNAL TypingResult infer_lambda(Environment *env, AstLambda *lambda) {
+    LambdaType type = {};
+
+    push_scope(env, &lambda->body);
+    DEFER(pop_scope(env));
+    
+    FOR (lambda->params, param) {
+        ParameterBuilder.size = 0;
+
+        Field field = {};
+        field.ident = param->ident;
+        field.offset = param->position;
+        field.type_spec = param->type_spec;
+
+        CHECK_TYPING(fill_type_info(env, &field.type_spec.type, field.type_spec.location));
+
+        declare_symbol(env, &field.ident, &field.type_spec.type, true);
+
+        append(ParameterBuilder, field);
+    }
+    type.params = allocate_array(ParameterBuilder);
+
+    FOR (lambda->return_types, return_type) {
+        ReturnTypeBuilder.size = 0;
+
+        CHECK_TYPING(fill_type_info(env, &return_type->type, return_type->location));
+
+        append(ReturnTypeBuilder, return_type->type);
+    }
+    type.return_types = allocate_array(ReturnTypeBuilder);
+
+    lambda->type.kind = TYPE_LAMBDA;
+    lambda->type.as.lambda = type;
+
+    TypingResult result = TYPING_CORRECT;
+    for (s64 i = 0; i < lambda->body.nodes.size; i += 1) {
+        TypingResult typing_result = infer(env, lambda->body.nodes[i]);
+        if (typing_result == TYPING_ERROR) {
+            result = TYPING_ERROR;
+        }
+    }
+
+    return result;
+}
+
+INTERNAL AstIdentifier *next_symbol(Array<AstIdentifier*> symbols, s64 *index) {
+    assert(index);
+
+    AstIdentifier *result = 0;
+    if (*index < symbols.size) {
+        result = symbols[*index];
+        *index += 1;
+    }
+    
+    return result;
+}
+
+INTERNAL TypingResult infer_symbol_declaration(Environment *env, AstSymbolDeclaration *decl) {
+    s64 symbol_index = 0;
+    
+    for (s64 i = 0; i < decl->things.size; i += 1) {
+        AstNode *thing = decl->things[i];
+
+        if (i < decl->types.size) {
+            CHECK_TYPING(check(env, thing, &decl->types[i].type));
+        } else {
+            CHECK_TYPING(infer(env, thing));
+        }
+
+        if (thing->kind == AST_CALL) {
+            FOR (thing->type.as.lambda.return_types, type) {
+                AstIdentifier *symbol = next_symbol(decl->symbols, &symbol_index);
+                if (symbol == 0) continue;
+
+                if (!declare_symbol(env, symbol, type, decl->variable)) return TYPING_ERROR;
+            }
+        } else {
+            AstIdentifier *symbol = next_symbol(decl->symbols, &symbol_index);
+            if (symbol == 0) continue;
+
+            if (!declare_symbol(env, symbol, thing, decl->variable)) return TYPING_ERROR;
+        }
+    }
+
+    if (symbol_index != decl->symbols.size) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, decl->symbols[symbol_index]->location, "Too many identifiers in declaration.");
+
+        return TYPING_ERROR;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_return_statement(Environment *env, AstReturn *ret) {
+    AstLambda *lambda = env->current_scope->lambda;
+
+    if (lambda == 0) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, ret->location, "Return not allowed outside of a lambda.");
+
+        return TYPING_ERROR;
+    }
+
+    if (ret->values.size != lambda->return_types.size) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, ret->location, format("Lambda expects %d return values (%d supplied).", lambda->return_types.size, ret->values.size));
+
+        return TYPING_ERROR;
+    }
+
+    for (s64 i = 0; i < ret->values.size; i += 1) {
+        TypingResult result = check(env, ret->values[i], &lambda->return_types[i].type);
+
+        if (result != TYPING_CORRECT) return result;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_binary_operator(Environment *env, AstBinaryOperator *op) {
+    TypingResult result;
+
+    result = infer(env, op->lhs);
+    if (result != TYPING_CORRECT) return result;
+    result = infer(env, op->rhs);
+    if (result != TYPING_CORRECT) return result;
+
+    if (!is_same_type(&op->lhs->type, &op->rhs->type)) {
+        if (!convert_type_to(&op->lhs->type, &op->rhs->type)) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, op->location, format("Can't convert %S to %S.", op->lhs->type.name, op->rhs->type.name));
+
+            return TYPING_ERROR;
+        }
+    } else {
+        op->type = op->lhs->type;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_assignment(Environment *env, AstAssignment *assign) {
+    TypingResult result;
+
+    result = infer(env, assign->value);
+    if (result != TYPING_CORRECT) return result;
+
+    result = check(env, assign->thing, &assign->value->type);
+    if (result != TYPING_CORRECT) return result;
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_dereference(Environment *env, AstDereference *deref) {
+    TypingResult result = infer(env, deref->expr);
+    if (result != TYPING_CORRECT) return result;
+
+    if (deref->expr->type.pointer_depth == 0) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, deref->location, format("Can't dereference expression of type %S.", full_type_name(&deref->expr->type)));
+
+        return TYPING_ERROR;
+    }
+
+    deref->type = deref->expr->type;
+    deref->type.pointer_depth -= 1;
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer_struct(Environment *env, AstStruct *struct_) {
+    Type *type = &struct_->type;
+    type->kind = TYPE_STRUCT;
+
+    FOR (struct_->fields, field) {
+        CHECK_TYPING(fill_type_info(env, &field->type_spec.type, field->type_spec.location));
+        // TODO: fill offset
+    }
+    // TODO: calculate size
+
+    type->kind = TYPE_STRUCT;
+    type->decl = struct_;
+    type->as.struct_.fields = struct_->fields;
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult infer(Environment *env, AstNode *node) {
+    TypingResult result = {};
+
+    AstNode *last = env->parent_node;
+    env->parent_node = node;
+
+    switch (node->kind) {
+        case AST_ERROR: { print("Node type not set.\n"); result = TYPING_ERROR; } break;
+
+        case AST_INTEGER_LITERAL:    { result = infer_integer_literal(env, (AstIntegerLiteral*)node); } break;
+        case AST_SYMBOL_DECLARATION: { result = infer_symbol_declaration(env, (AstSymbolDeclaration*)node); } break;
+        case AST_IDENTIFIER:         { result = infer_identifier(env, (AstIdentifier*)node); } break;
+        case AST_STRING:             { result = infer_string_literal(env, (AstString*)node); } break;
+        case AST_CALL:               { result = infer_call(env, (AstCall*)node); } break;
+        case AST_ASSIGNMENT:         { result = infer_assignment(env, (AstAssignment*)node); } break;
+        case AST_RETURN:             { result = infer_return_statement(env, (AstReturn*)node); } break;
+        case AST_BINARY_OPERATOR:    { result = infer_binary_operator(env, (AstBinaryOperator*)node); } break;
+        case AST_DEREFERENCE:        { result = infer_dereference(env, (AstDereference*)node); } break;
+        case AST_STRUCT:             { result = infer_struct(env, (AstStruct*)node); } break;
+        case AST_LAMBDA:             { result = infer_lambda(env, (AstLambda*)node); } break; 
+
+        default:
+            report_diagnostic(env, DIAGNOSTIC_ERROR, node->location, format("Can't infer ast node with type %S.", AST_KindNames[node->kind]));
+    }
+
+    env->parent_node = last;
+
+    return result;
+}
+
+
+INTERNAL TypingResult check_integer_literal(Environment *env, AstNode *node, Type *expected) {
+    AstIntegerLiteral *literal = (AstIntegerLiteral*)node;
+
+    if (expected->kind != TYPE_INTEGER) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, literal->location, format("Can't convert integer literal to type %S.\n", expected->name));
+
+        return TYPING_ERROR;
+    }
+
+    if (expected->pointer_depth > 0) {
+        String name = full_type_name(expected);
+        report_diagnostic(env, DIAGNOSTIC_ERROR, literal->location, format("Can't convert integer to %S.\n", name));
+    }
+
+    if (literal->value <= expected->as.integer.upper_bound) {
+        literal->type = *expected;
+    } else {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, literal->location, "Literal does not fit into type.\n");
+
+        return TYPING_ERROR;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult check_identifier(Environment *env, AstIdentifier *ident, Type *expected) {
+    Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
+    if (identifier->kind == IDENTIFIER_UNDEFINED) {
+        return TYPING_UNDECLARED_IDENTIFIER;
+    }
+
+    if (identifier->kind == IDENTIFIER_TYPE) {
+        report_diagnostic(env, DIAGNOSTIC_ERROR, ident->location, format("Identifier %S is a type.", ident->name));
+
+        return TYPING_ERROR;
+    }
+
+    assert(identifier->kind == IDENTIFIER_VARIABLE);
+    ident->type = *identifier->type;
+
+    if (!is_same_type(&ident->type, expected)) {
+        if (!convert_type_to(expected, &ident->type)) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, ident->location, format("Can't convert %S to %S.", ident->type.name, expected->name));
+
+            return TYPING_ERROR;
+        }
+    }
+
+    return TYPING_CORRECT;
+}
+INTERNAL TypingResult check_binary_operator(Environment *env, AstBinaryOperator *op, Type *expected) {
+    TypingResult result;
+
+    result = check(env, op->lhs, expected);
+    if (result != TYPING_CORRECT) return result;
+    result = check(env, op->rhs, expected);
+    if (result != TYPING_CORRECT) return result;
+
+    if (!is_same_type(&op->lhs->type, &op->rhs->type)) {
+        if (!convert_type_to(&op->lhs->type, &op->rhs->type)) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, op->location, format("Can't convert %S to %S.", op->lhs->type.name, op->rhs->type.name));
+
+            return TYPING_ERROR;
+        }
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult check_variable_declaration(Environment *env, AstVariableDeclaration *decl, Type *expected) {
+    if (decl->type.decl) {
+        if (!is_same_type(expected, &decl->type)) {
+            report_diagnostic(env, DIAGNOSTIC_ERROR, decl->location, format("Expected expression of type %S.\n", expected->name));
+
+            return TYPING_ERROR;
+        }
+    } else {
+        decl->type = *expected;
+    }
+
+    return TYPING_CORRECT;
+}
+
+// TODO: This is not correct. But the regular inteface doesn't work with multiple returns.
+INTERNAL TypingResult check_call(Environment *env, AstCall *call) {
+    return infer_call(env, call);
+}
+
+INTERNAL TypingResult check(Environment *env, AstNode *node, Type *expected) {
+    TypingResult result = {};
+
+    switch (node->kind) {
+        case AST_ERROR: { print("Node type not set.\n"); result = TYPING_ERROR; } break;
+
+        case AST_INTEGER_LITERAL:  { result = check_integer_literal(env, (AstIntegerLiteral*)node, expected); } break;
+        case AST_IDENTIFIER:       { result = check_identifier(env, (AstIdentifier*)node, expected); } break;
+        case AST_VARIABLE_DECLARATION: { result = check_variable_declaration(env, (AstVariableDeclaration*)node, expected); } break;
+        case AST_CALL:             { result = check_call(env, (AstCall*)node); } break;
+        case AST_BINARY_OPERATOR:  { result = check_binary_operator(env, (AstBinaryOperator*)node, expected); } break;
+
+        default:
+            report_diagnostic(env, DIAGNOSTIC_ERROR, node->location, t_format("Can't check ast node with type %S.", AST_KindNames[node->kind]));
+    }
+
+    return result;
+}
+
+
+bool type_check_ast(Environment *env) {
+    init(&env->root.symbols, 8);
+    env->current_scope = &env->root;
+
+    init_builtin_types(env);
+
+    b32 result = true;
+
+    for (s64 i = 0; i < env->root.nodes.size; i += 1) {
+        TypingResult typing_result = infer(env, env->root.nodes[i]);
+        if (typing_result == TYPING_ERROR) {
+            result = false;
+        }
+    }
+
+    if (result == true) {
+        for (s64 i = 0; i < env->undeclared_identifiers.size; i += 1) {
+            UndeclaredIdentifier *ident = &env->undeclared_identifiers[i];
+            report_diagnostic(env, DIAGNOSTIC_ERROR, ident->location, t_format("Undeclared identifier %S.", ident->name));
+
+            result = false;
+        }
+    }
+
+    if (env->undeclared_identifiers.size) result = false;
+
+    return result;
 }
 

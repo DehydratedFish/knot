@@ -85,6 +85,8 @@ int main(int argc, char **argv) {
 		append(&args, String((u8*)argv[i], c_string_length(argv[i])));
 	}
 	result = application_main(args);
+
+	return result;
 }
 
 

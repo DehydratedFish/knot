@@ -1,245 +1,260 @@
-#ifndef INCLUDE_GUARD_STRING2_H
-#define INCLUDE_GUARD_STRING2_H
+#pragma once
 
 #include "memory.h"
 
 
-inline s32 c_string_length(char const *str) {
-	if (str == 0) return 0;
-
-	s32 size = 0;
-	for (; str[size]; size += 1);
-
-	return size;
-}
-
-
-r32 const StringGrowFactor = 2.0f;
-struct String {
-	Allocator allocator;
-
-	u8 *data;
-	s32 size;
-	s32 alloc;
-
-
-	String() {
-		allocator = get_memory_context()->allocator;
-
-		data = 0;
-		size = 0;
-		alloc = 0;
-	}
-
-	String(String const &string) {
-		allocator = string.allocator;
-
-		data = string.data;
-		size = string.size;
-		alloc = 0;
-	}
-
-	String(String &&string) {
-		allocator = string.allocator;
-
-		data = string.data;
-		size = string.size;
-		alloc = string.alloc;
-
-		string.alloc = 0;
-	}
-
-	String(char const *str) {
-		allocator = get_memory_context()->allocator;
-
-		//NOTE: we never touch a reference and always copy before a change so this cast should be fine
-		data = (u8*)str;
-		size = c_string_length(str);
-		alloc = 0;
-	}
-
-	String(u8 *str, s32 length) {
-		allocator = get_memory_context()->allocator;
-
-		data = str;
-		size = length;
-		alloc = 0;
-	}
-
-	~String() {
-		if (alloc) {
-			allocator.allocate(data, 0, allocator.data);
-			data = 0;
-			size = 0;
-			alloc = 0;
-		}
-	}
-
-	String &operator=(String const &string) {
-		allocator = string.allocator;
-
-		data = string.data;
-		size = string.size;
-		alloc = 0;
-
-		return *this;
-	}
-
-	String &operator=(String &&string) {
-		allocator = string.allocator;
-
-		data = string.data;
-		size = string.size;
-		alloc = string.alloc;
-
-		string.alloc = 0;
-
-		return *this;
-	}
-
-	String &operator=(char const *str) {
-		s32 length = c_string_length(str);
-		if (alloc == 0) {
-			data = (u8*)str;
-			size = length;
-		} else {
-			if (alloc < length) {
-				data = (u8*)reallocate_memory(allocator, data, length);
-				alloc = length;
-			}
-
-			copy_memory(data, (u8*)str, length);
-			size = length;
-		}
-
-		return *this;
-	}
-
-	u8 &operator[](s32 index) {
-		BOUNDS_CHECK(0, size - 1, index, "String indexing out of bounds");
-
-		return data[index];
-	}
-};
-
-
-inline void prealloc(String *string, s32 size) {
-	string->data = (u8*)allocate_memory(string->allocator, size);
-	string->alloc = size;
-}
-
-inline void string_alloc(String *string, u8 *buffer, s32 length) {
-	// TODO: check if it is necessary to deallocate first
-
-	string->data = (u8*)allocate_memory(string->allocator, length);
-	string->size = length;
-	string->alloc = length;
-
-	copy_memory(string->data, buffer, length);
-}
-
-inline void append(String *string, u8 *buffer, s32 length) {
-	if (string->alloc == 0) {
-		if (string->size == 0) {
-			string_alloc(string, buffer, length);
-			return;
-		} else {
-			u8 *tmp = string->data;
-			s32 size = string->size;
-			prealloc(string, size + length);
-			copy_memory(string->data, tmp, size);
-			string->size = size;
-		}
-	}
-
-	s32 new_size = string->size + length;
-	if (string->alloc < new_size) {
-		s32 new_alloc = (s32)(string->alloc * StringGrowFactor);
-		if (new_alloc < length) new_alloc = string->alloc + length;
-
-		string->data = (u8*)reallocate_memory(string->allocator, string->data, new_alloc);
-		string->alloc = new_alloc;
-	}
-
-	copy_memory(string->data + string->size, buffer, length);
-	string->size += length;
-}
-inline void append(String *string, String ref) {
-	append(string, ref.data, ref.size);
-}
-
-// TODO: utf8
-inline void put(String *string, u8 c) {
-	append(string, &c, 1);
-}
-
-template<typename Type>
-inline bool get(String *string, Type *value) {
-	assert(string->alloc == 0);
-
-	s32 const size = sizeof(Type);
-
-	if (string->size < size) return false;
-
-	copy_memory(value, string->data, size);
-	string->data += size;
-	string->size -= size;
-
-	return true;
-}
-
-inline String copy(String *string) {
-	String result;
-	append(&result, string->data, string->size);
-
-	return result;
-}
-
 inline bool equal(String lhs, String rhs) {
-	if (lhs.size == rhs.size) {
-		for (s32 i = 0; i < lhs.size; i += 1) {
-			if (lhs.data[i] != rhs.data[i]) return false;
-		}
+    if (lhs.size == rhs.size) {
+        for (s64 i = 0; i < lhs.size; i += 1) {
+            if (lhs[i] != rhs[i]) return false;
+        }
 
-		return true;
-	}
+        return true;
+    }
 
-	return false;
+    return false;
 }
 
-inline Ordering compare(String lhs, String rhs) {
-	for (s32 i = 0; i != lhs.size && i != rhs.size; i += 1) {
-		if (lhs[i] < rhs[i]) return CMP_LESSER;
-		if (lhs[i] > rhs[i]) return CMP_GREATER;
-	}
-
-	s32 order = lhs.size - rhs.size;
-	if (order < 0) return CMP_LESSER;
-	else if (order > 0) return CMP_GREATER;
-	else return CMP_EQUAL;
+inline bool operator==(String lhs, String rhs) {
+    return equal(lhs, rhs);
 }
 
-// NOTE: simple djb2 hash
-inline u32 hash(String string) {
-	u32 hash = 5381;
-
-	for (s32 i = 0; i < string.size; i += 1) {
-		hash = hash * 33 ^ string[i];
-	}
-
-	return hash;
+inline bool operator!=(String lhs, String rhs) {
+    return !(equal(lhs, rhs));
 }
 
-// TODO: String can't be used with variadic args... remove when a proper print is implemented
-struct PrintRef {
-	u8 *data;
-	s32 size;
+inline bool contains(String str, String search) {
+    for (s64 i = 0; i < str.size; i += 1) {
+        if (i + search.size > str.size) return false;
+
+        String tmp = {str.data + i, search.size};
+        if (equal(tmp, search)) return true;
+    }
+
+    return false;
+}
+
+inline b32 starts_with(String str, String begin) {
+    if (str.size < begin.size) return false;
+
+    str.size = begin.size;
+    return str == begin;
+}
+
+inline bool ends_with(String str, String search) {
+    if (str.size < search.size) return false;
+
+    str.data += str.size - search.size;
+    str.size  = search.size;
+
+    return str == search;
+}
+
+inline String shrink_front(String str, s64 amount = 1) {
+#ifdef BOUNDS_CHECKING
+    if (str.size < amount) die("String is too small to shrink.");
+#endif
+    str.data += amount;
+    str.size -= amount;
+
+    return str;
+}
+
+inline String shrink_back(String str, s64 amount = 1) {
+#ifdef BOUNDS_CHECKING
+    if (str.size < amount) die("String is too small to shrink.");
+#endif
+    str.size -= amount;
+
+    return str;
+}
+
+inline String shrink(String str, s64 amount = 1) {
+#ifdef BOUNDS_CHECKING
+    if (str.size < amount * 2) die("String is too small to shrink.");
+#endif
+    return shrink_back(shrink_front(str, amount), amount);
+}
+
+inline String trim(String str) {
+    s64 num_whitespaces = 0;
+
+    for (s64 i = 0; i < str.size; i += 1) {
+        if (str[i] > ' ') break;
+
+        num_whitespaces += 1;
+    }
+    str.data += num_whitespaces;
+    str.size -= num_whitespaces;
+
+    num_whitespaces = 0;
+    for (s64 i = str.size; i > 0; i -= 1) {
+        if (str[i - 1] > ' ') break;
+
+        num_whitespaces += 1;
+    }
+    str.size -= num_whitespaces;
+
+    return str;
+}
+
+inline String sub_string(String buffer, s64 offset, s64 size) {
+#ifdef BOUNDS_CHECKING
+    if (buffer.size < offset + size) die("String read out of bounds.");
+#endif
+    String result = {buffer.data + offset, size};
+
+    return result;
+}
+
+inline String allocate_string(s64 size, Allocator alloc = default_allocator()) {
+    String result = {};
+    result.data = ALLOC(alloc, u8, size);
+    result.size = size;
+
+    return result;
+}
+
+inline void destroy(String *str, Allocator alloc = default_allocator()) {
+    DEALLOC(alloc, str->data, str->size);
+    INIT_STRUCT(str);
+}
+
+inline String allocate_temp_string(s64 size) {
+    String result = {};
+    result.data = (u8*)allocate(temporary_allocator(), size);
+    result.size = size;
+
+    return result;
+}
+
+inline String allocate_string(String str, Allocator alloc = default_allocator()) {
+    String result = allocate_string(str.size, alloc);
+
+    copy_memory(result.data, str.data, str.size);
+
+    return result;
+}
+
+inline String allocate_temp_string(String str) {
+    String result = allocate_temp_string(str.size);
+
+    copy_memory(result.data, str.data, str.size);
+
+    return result;
+}
+
+
+#ifndef STRING_BUILDER_BLOCK_SIZE
+#define STRING_BUILDER_BLOCK_SIZE KILOBYTES(4)
+#endif
+
+struct StringBuilderBlock {
+    StringBuilderBlock *next;
+
+    u8 buffer[STRING_BUILDER_BLOCK_SIZE];
+    s64 used;
+};
+struct StringBuilder {
+    Allocator allocator;
+
+    StringBuilderBlock  first;
+    StringBuilderBlock *current;
+
+    s64 total_size;
 };
 
-inline PrintRef pr(String ref) {
-	return {ref.data, ref.size};
+inline void reset(StringBuilder *builder) {
+    StringBuilderBlock *block = &builder->first;
+
+    while (block) {
+        block->used = 0;
+        block = block->next;
+    }
+
+    builder->total_size = 0;
 }
 
+inline void append(StringBuilder *builder, u8 c, Allocator alloc = default_allocator()) {
+    if (builder->current == 0) builder->current = &builder->first;
+    if (builder->allocator.allocate == 0) builder->allocator = alloc;
 
-#endif // INCLUDE_GUARD_STRING2_H
+    if (builder->current->used + 1 > STRING_BUILDER_BLOCK_SIZE) {
+        if (builder->current->next == 0) {
+            builder->current->next = ALLOC(builder->allocator, StringBuilderBlock, 1);
+        } else {
+            // NOTE: buffer not initialized to zero for speed
+            builder->current->next->used = 0;
+        }
+        builder->current = builder->current->next;
+    }
+
+    builder->current->buffer[builder->current->used] = c;
+    builder->current->used += 1;
+    builder->total_size    += 1;
+}
+
+inline void append(StringBuilder *builder, String str, Allocator alloc = default_allocator()) {
+    if (builder->current == 0) builder->current = &builder->first;
+    if (builder->allocator.allocate == 0) builder->allocator = alloc;
+
+    s64 space = STRING_BUILDER_BLOCK_SIZE - builder->current->used;
+    while (space < str.size) {
+        copy_memory(builder->current->buffer + builder->current->used, str.data, space);
+        builder->current->used += space;
+        builder->total_size    += space;
+        str = shrink_front(str, space);
+
+        if (builder->current->next == 0) {
+            builder->current->next = ALLOC(builder->allocator, StringBuilderBlock, 1);
+        } else {
+            builder->current->next->used = 0;
+        }
+        builder->current = builder->current->next;
+
+        space = STRING_BUILDER_BLOCK_SIZE;
+    }
+
+    copy_memory(builder->current->buffer + builder->current->used, str.data, str.size);
+    builder->current->used += str.size;
+    builder->total_size    += str.size;
+}
+
+inline void append_raw(StringBuilder *builder, void *buffer, s64 size, Allocator alloc = default_allocator()) {
+    String str = {(u8*)buffer, size};
+    append(builder, str, alloc);
+}
+#define APPEND_RAW(builder, value) append_raw((builder), (void*)&(value), sizeof(value))
+
+inline void destroy(StringBuilder *builder) {
+    StringBuilderBlock *next = builder->first.next;
+
+    while (next) {
+        StringBuilderBlock *tmp = next->next;
+        DEALLOC(builder->allocator, next, 1);
+
+        next = tmp;
+    }
+}
+
+inline String to_allocated_string(StringBuilder *builder, Allocator alloc = default_allocator()) {
+    String result = allocate_string(builder->total_size, alloc);
+
+    s64 size = 0;
+    StringBuilderBlock *block = &builder->first;
+    while (block) {
+        copy_memory(result.data + size, block->buffer, block->used);
+        size += block->used;
+
+        block = block->next;
+    }
+
+    return result;
+}
+
+inline String temp_string(StringBuilder *builder) {
+    assert(builder->total_size < STRING_BUILDER_BLOCK_SIZE);
+
+    return {builder->first.buffer, builder->first.used};
+}
 

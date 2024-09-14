@@ -1,0 +1,26 @@
+struct String {
+    data: u8&;
+    size: s64;
+}
+
+(args: String[]) main -> s32 {
+    num, count: s32 = multi();
+    added := add(num, count);
+
+    local :: (value: s32) {
+        str := "this is just a string";
+    };
+
+    return 0;
+}
+
+() multi -> s32, u8 {
+    return 42, 4;
+}
+
+(lhs: s32, rhs: s32) add -> s32 {
+    result := lhs + rhs;
+
+    return result;
+}
+

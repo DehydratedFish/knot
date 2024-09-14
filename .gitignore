@@ -1,2 +1,5 @@
+.vs
 build
-
+knot
+build_gcc.sh
+build_msvc.bat
