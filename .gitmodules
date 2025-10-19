@@ -1,0 +1,3 @@
+[submodule "dependencies/mountain"]
+	path = dependencies/mountain
+	url = git@github.com:DehydratedFish/mountain.git

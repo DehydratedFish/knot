@@ -1,11 +1,10 @@
 #pragma once
 
 #include "definitions.h"
-#include "string2.h"
 
 
 struct SourceLocation {
-	u8 *ptr;
+    s64 pos;
 	s32 line;
 	s32 column;
 };
@@ -23,4 +22,5 @@ struct DiagnosticMessage {
 };
 
 void report_diagnostic(struct Environment *env, DiagnosticKind kind, SourceLocation location, String message);
+void report_error(Environment *env, SourceLocation location, String message);
 

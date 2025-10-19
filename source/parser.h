@@ -1,10 +1,11 @@
 #pragma once
 
-#include "string2.h"
-
 #include "knot.h"
-#include "ast.h"
+#include "list.h"
 
+
+struct SyntaxElement;
+struct OperatorInfo;
 
 enum TokenKind {
     TOKEN_END_OF_INPUT,
@@ -39,7 +40,7 @@ enum TokenKind {
 
     TOKEN_UNKNOWN,
 
-    TOKEN_COUNT
+    TOKEN_COUNT,
 };
 struct Token {
     TokenKind kind;
@@ -48,12 +49,24 @@ struct Token {
     String content;
 };
 
+
+struct ExpressionBuilder {
+    // NOTE: Either unary or binary operator expected next.
+    b32 is_binary;
+    List<SyntaxElement*> operand_stack;
+    List<OperatorInfo>   operator_stack;
+
+    List<SyntaxElement*> expressions;
+};
+
 s32 const PARSER_MAX_PEEK = 16;
 struct Parser {
     String source_code;
     String filename;
 
     SourceLocation loc;
+
+    ExpressionBuilder builder;
 
     Environment *env;
 
