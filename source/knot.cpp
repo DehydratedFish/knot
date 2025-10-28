@@ -1,3 +1,4 @@
+#include "list.h"
 #include "platform.h"
 
 #include "knot.h"
@@ -6,18 +7,14 @@
 
 
 void report_diagnostic(Environment *env, DiagnosticKind kind, SourceLocation location, String message) {
-	DiagnosticMessage msg = {
-		{},
-		env->filename,
-		location,
-		kind
-	};
+    DiagnosticMessage msg = {
+        {},
+        env->filename,
+        location,
+        kind
+    };
 
-	if (env->diag_count < ENV_MAX_DIAG_COUNT) {
-		env->diags[env->diag_count] = msg;
-		env->diags[env->diag_count].message = message;
-		env->diag_count += 1;
-	}
+    append(&env->diagnostics, msg);
 }
 
 void report_error(Environment *env, SourceLocation location, String message) {
@@ -25,13 +22,13 @@ void report_error(Environment *env, SourceLocation location, String message) {
 }
 
 String find_line(SourceLocation loc, String source) {
-	u8 *line_begin = &source[loc.pos - (loc.column - 1)];
-	s32 length = loc.column;
+    u8 *line_begin = &source[loc.pos - (loc.column - 1)];
+    s32 length = loc.column;
 
-	s64 source_left = source.size - (loc.pos - (s64)source.data);
-	for (; source_left && line_begin[length] != '\n' && line_begin[length] != '\r'; length += 1, source_left -= 1);
+    s64 source_left = source.size - (loc.pos - (s64)source.data);
+    for (; source_left && line_begin[length] != '\n' && line_begin[length] != '\r'; length += 1, source_left -= 1);
 
-	return String(line_begin, length);
+    return String(line_begin, length);
 }
 
 INTERNAL s32 trim_indentation(String *line) {
@@ -50,11 +47,9 @@ INTERNAL s32 trim_indentation(String *line) {
 
 
 INTERNAL void print_diagnostics(Environment *env, String source) {
-	for (s32 i = 0; i < env->diag_count; i += 1) {
-		DiagnosticMessage *diag = &env->diags[i];
-
-		String line = find_line(diag->location, source);
-		s32 line_start = trim_indentation(&line);
+    FOR (env->diagnostics, diag) {
+        String line = find_line(diag->location, source);
+        s32 line_start = trim_indentation(&line);
 
         String prefix = {};
         if (diag->kind == DIAGNOSTIC_NOTE) {
@@ -67,33 +62,29 @@ INTERNAL void print_diagnostics(Environment *env, String source) {
             assert(false);
         }
 
-		print("%S%S:%d:%d: %S\n", prefix, diag->file, diag->location.line, diag->location.column, diag->message);
-		print("%S\n", line);
+        print("%S%S:%d:%d: %S\n", prefix, diag->file, diag->location.line, diag->location.column, diag->message);
+        print("%S\n", line);
 
-		s32 spaces = diag->location.column - line_start - 1;
-		for (s32 i = 0; i < spaces; i += 1) {
-			print(" ");
-		}
-		print("^\n\n");
-	}
-
-    if (env->diag_count == ENV_MAX_DIAG_COUNT) {
-        print("More than %d diagnostics encountered.", ENV_MAX_DIAG_COUNT);
+        s32 spaces = diag->location.column - line_start - 1;
+        for (s32 i = 0; i < spaces; i += 1) {
+            print(" ");
+        }
+        print("^\n\n");
     }
 }
 
 s32 application_main(Array<String> args) {
-	String file_to_parse;
+    String file_to_parse;
 
-	if (args.size < 2) {
-		print("Missing source file in arguments to compiler.\n");
-		return -1;
-	}
+    if (args.size < 2) {
+        print("Missing source file in arguments to compiler.\n");
+        return -1;
+    }
 
     // TODO: Change backslashes to slashes.
-	file_to_parse = args[1];
+    file_to_parse = args[1];
 
-	PlatformReadResult file_result = platform_read_entire_file(file_to_parse);
+    PlatformReadResult file_result = platform_read_entire_file(file_to_parse);
     if (file_result.error != PLATFORM_READ_OK) {
         print("Could not open or read file %S.\n", file_to_parse);
 
@@ -101,48 +92,43 @@ s32 application_main(Array<String> args) {
     }
 
     String source = file_result.content;
-	Parser parser = init_parser(file_to_parse, source);
+    Parser parser = init_parser(file_to_parse, source);
 
     print("DEBUG: Parsing\n");
-	Environment env = {};
-    init(&env);
-	if (!parse_as_knot_code(&parser, &env)) {
-		print_diagnostics(&env, source);
-		if (env.diag_count == ENV_MAX_DIAG_COUNT) {
-			print("More than %d diagnostics encountered.", ENV_MAX_DIAG_COUNT);
-		}
-		print("Compiler encountered errors.");
+    Environment env = {};
+    if (!parse_as_knot_code(&parser, &env)) {
+        print_diagnostics(&env, source);
+        print("Compiler encountered errors.");
 
-		return -1;
-	}
-
-    print("\nDEBUG: Type checking.\n");
-    if (!type_check(&env)) {
-		print_diagnostics(&env, source);
-		if (env.diag_count == ENV_MAX_DIAG_COUNT) {
-			print("More than %d diagnostics encountered.", ENV_MAX_DIAG_COUNT);
-		}
-		print("Compiler encountered errors.");
-
-		return -1;
+        return -1;
     }
 
     /*
-    print("\nDEBUG: Interpreting\n");
-    Array<u8> bytecode = {env.bytecode_instructions.data, env.bytecode_instructions.size};
-    if (!interpret(&env, bytecode)) {
-		print_diagnostics(&env, source);
-		if (env.diag_count == ENV_MAX_DIAG_COUNT) {
-			print("More than %d diagnostics encountered.", ENV_MAX_DIAG_COUNT);
-		}
-		print("Compiler encountered errors.");
+    print("\nDEBUG: Type checking.\n");
+    if (!type_check(&env)) {
+        print_diagnostics(&env, source);
+        print("Compiler encountered errors.");
 
-		return -1;
+        return -1;
     }
     */
 
-	print("\nCompilation finished.\n");
+    /*
+       print("\nDEBUG: Interpreting\n");
+       Array<u8> bytecode = {env.bytecode_instructions.data, env.bytecode_instructions.size};
+       if (!interpret(&env, bytecode)) {
+       print_diagnostics(&env, source);
+       if (env.diag_count == ENV_MAX_DIAG_COUNT) {
+       print("More than %d diagnostics encountered.", ENV_MAX_DIAG_COUNT);
+       }
+       print("Compiler encountered errors.");
 
-	return 0;
+       return -1;
+       }
+       */
+
+    print("\nCompilation finished.\n");
+
+    return 0;
 }
 

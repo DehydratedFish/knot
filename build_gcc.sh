@@ -1,10 +1,8 @@
-#! /bin/bash
+#/bin/bash
 
-mkdir -p build
-cd source
+mkdir -p build/debug
 
-sources="$PWD/knot.cpp $PWD/linux/platform.cpp $PWD/parser.cpp $PWD/type_check.cpp $PWD/io.cpp $PWD/bytecode.cpp"
+sources="source/knot.cpp source/parser.cpp"
 
-
-g++ -DDEVELOPER -DBOUNDS_CHECKING -g -I. -o ../build/knot $sources
+g++ -DDEVELOPER -DBOUNDS_CHECKING -g -Isource -Idependencies/mountain/source -o build/debug/knot $sources
 

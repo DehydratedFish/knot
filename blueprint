@@ -1,0 +1,14 @@
+use basic;
+use local "dependencies/mountain" as mountain;
+
+executable: knot {
+    folder: "build/debug";
+
+    symbols: "DEVELOPER", "BOUNDS_CHECKING";
+    include: "source";
+
+    sources: /"source", "knot.cpp", "parser.cpp";
+
+    dependencies: debug, mountain.core;
+}
+

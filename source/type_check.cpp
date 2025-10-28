@@ -1,5 +1,4 @@
 #include "type_check.h"
-#include "ast.h"
 #include "definitions.h"
 #include "knot.h"
 #include "memory.h"

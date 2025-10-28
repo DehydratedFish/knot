@@ -1,11 +1,17 @@
 #pragma once
 
-#include "knot.h"
 #include "list.h"
 
 
 
 struct SyntaxElement;
+
+
+struct SourceLocation {
+    s64 pos;
+    s32 line;
+    s32 column;
+};
 
 
 // NOTE: In order of precedence.
@@ -80,13 +86,5 @@ struct SyntaxBinaryOperator : SyntaxElement {
 
     SyntaxElement *lhs;
     SyntaxElement *rhs;
-};
-
-struct Environment {
-    String filename;
-
-    List<DiagnosticMessage> diagnostic;
-
-    SyntaxScope root;
 };
 

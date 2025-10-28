@@ -768,6 +768,7 @@ INTERNAL void push_operator(Operator op, SourceLocation loc) {
 
 */
 
+/*
 INTERNAL b32 parse_struct_declaration(Parser *parser) {
     consume(parser, TOKEN_KEYWORD_STRUCT, "Missing keyword struct.");
 
@@ -821,6 +822,7 @@ INTERNAL b32 parse_struct_declaration(Parser *parser) {
 
     return true;
 }
+*/
 
 INTERNAL b32 parse_statement(Parser *parser);
 
@@ -977,11 +979,15 @@ INTERNAL b32 parse_binary_expression(Parser *parser) {
 }
 
 INTERNAL b32 parse_expression(Parser *parser) {
+    b32 result = false;
+
     if (parser->builder.is_binary) {
-        parse_binary_expression(parser);
+        result = parse_binary_expression(parser);
     } else {
-        parse_unary_expression(parser);
+        result = parse_unary_expression(parser);
     }
+
+    return result;
 }
 
 INTERNAL b32 parse_expressions(Parser *parser) {
@@ -992,6 +998,7 @@ INTERNAL b32 parse_expressions(Parser *parser) {
     return true;
 }
 
+/*
 INTERNAL b32 parse_function_declaration(Parser *parser) {
     emit_instruction(parser->env, FUNCTION_DECLARATION);
     emit_source_item(parser->env, "", parser->current_token.loc);
@@ -1117,35 +1124,18 @@ INTERNAL b32 parse_declaration(Parser *parser) {
 
     return result;
 }
+*/
 
-INTERNAL b32 parse_statement(Parser *parser) {
-    emit_instruction(parser->env, STATEMENT);
-    Backpatch statement = backpatch<s32>(parser->env);
-
+INTERNAL b32 parse_syntax_element(Parser *parser) {
     TokenKind kind = parser->current_token.kind;
-    if (kind == TOKEN_KEYWORD_RETURN) {
-        return parse_return(parser);
+    if (kind == TOKEN_SEMICOLON) {
+        advance_token(parser);
+        return true;
     }
 
-    if (!parse_expression(parser)) return false;
-    if (parser->decl_or_assign_list.size == 0) {
-        parse_error(parser, parser->current_token.loc, "Expected statement or expression.");
-        return false;
-    }
+    if (!parse_expressions(parser)) return false;
 
-    b32 result = true;
-    if (match(parser, TOKEN_COLON)) {
-        // TODO: Maybe make the colon be a binary operator and process declarations inside
-        //       the expression function?
-        if (!parse_type_list(parser)) return false;
-        result = parse_declaration(parser);
-    }
-
-    match(parser, TOKEN_SEMICOLON);
-    s32 length = parser->env->instructions.size - statement.index - sizeof(s32);
-    fill_backpatch(&statement, &length, sizeof(length));
-
-    return result;
+    return false;
 }
 
 INTERNAL void synchronize(Parser *parser) {
@@ -1195,13 +1185,11 @@ bool parse_as_knot_code(Parser *parser, Environment *env) {
     parser->env = env;
 
     while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
-        if (!parse_statement(parser)) {
+        if (!parse_syntax_element(parser)) {
             has_error = true;
             synchronize(parser);
         }
     }
-
-    env->scopes[0].instructions = env->instructions;
 
     return !has_error;
 }
