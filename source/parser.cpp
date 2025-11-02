@@ -1,12 +1,16 @@
 #include "parser.h"
 
 #include "definitions.h"
+#include "io.h"
 #include "knot.h"
 #include "list.h"
 #include "memory.h"
+#include "platform.h"
 #include "string2.h"
 
 #include "syntax.h"
+#include <cstdarg>
+
 
 
 enum {
@@ -835,11 +839,11 @@ INTERNAL void add_operator(Parser *parser, Token *token) {
     OperatorInfo info;
 
     switch (token->kind) {
-    case TOKEN_AMPERSAND: info.op = OP_REFERENCE;
-    case TOKEN_PLUS:      info.op = OP_PLUS;
-    case TOKEN_MINUS:     info.op = OP_MINUS;
-    case TOKEN_ASTERISK:  info.op = OP_MULTIPLY;
-    case TOKEN_SLASH:     info.op = OP_DIVIDE;
+    case TOKEN_AMPERSAND: info.op = OP_REFERENCE; break;
+    case TOKEN_PLUS:      info.op = OP_PLUS;      break;
+    case TOKEN_MINUS:     info.op = OP_MINUS;     break;
+    case TOKEN_ASTERISK:  info.op = OP_MULTIPLY;  break;
+    case TOKEN_SLASH:     info.op = OP_DIVIDE;    break;
 
     default:
         die("Token is not an operator.");
@@ -894,7 +898,7 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
             operands->size -= 1;
 
             add_operand(parser, ref);
-        }
+        } break;
         }
 
         stack->size -= 1;
@@ -942,60 +946,126 @@ INTERNAL b32 parse_unary_expression(Parser *parser) {
 }
 
 INTERNAL b32 parse_binary_expression(Parser *parser) {
+    parser->builder.is_binary = false;
+
     switch (parser->current_token.kind) {
     case TOKEN_PLUS: {
         reduce(parser, OP_PLUS);
         add_operator(parser, &parser->current_token);
-
-        parser->builder.is_binary = false;
     } break;
 
     case TOKEN_MINUS: {
         reduce(parser, OP_MINUS);
         add_operator(parser, &parser->current_token);
-
-        parser->builder.is_binary = false;
     } break;
 
     case TOKEN_ASTERISK: {
         reduce(parser, OP_MULTIPLY);
         add_operator(parser, &parser->current_token);
-
-        parser->builder.is_binary = false;
     } break;
 
     case TOKEN_SLASH: {
         reduce(parser, OP_DIVIDE);
         add_operator(parser, &parser->current_token);
-
-        parser->builder.is_binary = false;
     } break;
 
     default:
         return false;
     }
 
+    advance_token(parser);
+
     return true;
 }
 
-INTERNAL b32 parse_expression(Parser *parser) {
-    b32 result = false;
-
-    if (parser->builder.is_binary) {
-        result = parse_binary_expression(parser);
-    } else {
-        result = parse_unary_expression(parser);
+INTERNAL void parse_expression(Parser *parser) {
+    b32 keep_parsing = true;
+    while (keep_parsing == true) {
+        if (parser->builder.is_binary) {
+            keep_parsing = parse_binary_expression(parser);
+        } else {
+            keep_parsing = parse_unary_expression(parser);
+        }
     }
 
-    return result;
+    reduce(parser);
 }
 
 INTERNAL b32 parse_expressions(Parser *parser) {
+    ExpressionBuilder *builder = &parser->builder;
+
+    builder->is_binary = false;
+    builder->expressions.size    = 0;
+    builder->operand_stack.size  = 0;
+    builder->operator_stack.size = 0;
+
     do {
-        if (!parse_expression(parser)) return false;
+        parse_expression(parser);
+        if (builder->operand_stack.size == 0) {
+            report_error(parser->env, parser->current_token.loc, "Expected expression.");
+            return false;
+        }
+        assert(builder->operand_stack.size  == 1);
+        assert(builder->operator_stack.size == 0);
+
+        append(&builder->expressions, builder->operand_stack[0]);
+        builder->operand_stack.size = 0;
     } while(match(parser, TOKEN_COMMA));
 
     return true;
+}
+
+INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
+    b32 check = match(parser, TOKEN_COLON);
+    assert(check);
+
+    // TODO: Type declarations.
+
+    SyntaxElement *result = 0;
+    if (match(parser, TOKEN_COLON)) {
+        SourceLocation loc = parser->previous_token.loc;
+
+        if (parser->builder.expressions.size == 0) {
+            report_error(parser->env, parser->previous_token.loc, "Declaration needs identifiers to bind to.");
+            return result;
+        }
+
+        for (s64 i = 0; i < parser->builder.expressions.size; i += 1) {
+            auto *expression = parser->builder.expressions[i];
+
+            if (expression->kind != SYNTAX_IDENTIFIER) {
+                report_error(parser->env, expression->loc, "Declaration needs identifier to bind.");
+                return result;
+            }
+        }
+
+        SyntaxSymbolDeclaration *decl = ALLOC(DefaultAllocator, SyntaxSymbolDeclaration, 1);
+        decl->kind = SYNTAX_SYMBOL_DECL;
+        decl->loc  = loc;
+
+        // TODO: This is ugly as hell.
+        auto tmp = create_array(parser->builder.expressions);
+        decl->symbols.data = (SyntaxIdentifier**)tmp.data;
+        decl->symbols.size = tmp.size;
+        parser->builder.expressions.size = 0;
+
+        if (!parse_expressions(parser)) {
+            report_error(parser->env, parser->current_token.loc, "Expected expression (list).");
+
+            // TODO: Free array decl->symbols and decl.
+
+            return result;
+        }
+
+        decl->elements = create_array(parser->builder.expressions);
+        parser->builder.expressions.size = 0;
+
+        result = decl;
+    } else {
+        report_error(parser->env, parser->current_token.loc, "Expected declaration.");
+    }
+
+    return result;
 }
 
 /*
@@ -1126,16 +1196,27 @@ INTERNAL b32 parse_declaration(Parser *parser) {
 }
 */
 
-INTERNAL b32 parse_syntax_element(Parser *parser) {
-    TokenKind kind = parser->current_token.kind;
-    if (kind == TOKEN_SEMICOLON) {
+INTERNAL SyntaxElement *parse_syntax_element(Parser *parser) {
+    while (parser->current_token.kind == TOKEN_SEMICOLON) {
         advance_token(parser);
-        return true;
     }
 
-    if (!parse_expressions(parser)) return false;
+    if (!parse_expressions(parser)) {
+        report_error(parser->env, parser->current_token.loc, "Expected expression (list).");
+        return 0;
+    }
+    assert(parser->builder.expressions.size > 0);
 
-    return false;
+    if (parser->current_token.kind == TOKEN_COLON) {
+        return parse_declaration(parser);
+    }
+
+    SyntaxExpressionList *list = ALLOC(DefaultAllocator, SyntaxExpressionList, 1);
+    list->kind = SYNTAX_EXPRESSION_LIST;
+    list->loc  = parser->builder.expressions[0]->loc;
+    list->elements = create_array(parser->builder.expressions);
+
+    return list;
 }
 
 INTERNAL void synchronize(Parser *parser) {
@@ -1178,19 +1259,134 @@ INTERNAL void synchronize(Parser *parser) {
     }
 }
 
+INTERNAL void add_to_current_node(Parser *parser, SyntaxElement *element) {
+    assert(parser->current_scope->nodes.size != 0);
+
+    SyntaxNode *node = &parser->current_scope->nodes[-1];
+    node->tree = element;
+}
+
 bool parse_as_knot_code(Parser *parser, Environment *env) {
     bool has_error = false;
 
     env->filename = parser->filename;
     parser->env = env;
+    parser->current_scope = &env->root;
 
     while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
-        if (!parse_syntax_element(parser)) {
+        append(&parser->current_scope->nodes);
+
+        SyntaxElement *elem = parse_syntax_element(parser);
+        if (!elem) {
             has_error = true;
             synchronize(parser);
+        } else {
+            add_to_current_node(parser, elem);
         }
     }
 
     return !has_error;
+}
+
+
+
+
+
+struct PrettyPrinter {
+    PlatformFile *out;
+    s32 indent;
+};
+
+INTERNAL s32 const MaxIndent = 32;
+INTERNAL char const *IndentBuffer = "                                ";
+
+INTERNAL void print_syntax_element(PrettyPrinter *printer, SyntaxElement *elem);
+
+INTERNAL void print(PrettyPrinter *printer, char const *fmt, ...) {
+    assert(printer->indent < MaxIndent);
+
+    platform_write(printer->out, IndentBuffer, printer->indent);
+
+    va_list args;
+    va_start(args, fmt);
+    format(printer->out, fmt, args);
+    va_end(args);
+}
+
+INTERNAL void print_element_location(PrettyPrinter *printer, SyntaxElement *elem) {
+    print(printer, "[%d:%d]", elem->loc.line, elem->loc.column);
+}
+
+INTERNAL void print_syntax_identifier(PrettyPrinter *printer, SyntaxIdentifier *ident) {
+    print(printer, "{Identifier: %S, ", ident->name);
+    print_element_location(printer, ident);
+    print(printer, "}\n");
+}
+
+INTERNAL void print_syntax_integer(PrettyPrinter *printer, SyntaxIntegerLiteral *literal) {
+    print(printer, "{Integer Literal: %D, ", to_s64(literal->value));
+    print_element_location(printer, literal);
+    print(printer, "}\n");
+}
+
+INTERNAL void print_symbol_decl(PrettyPrinter *printer, SyntaxSymbolDeclaration *decl) {
+    print(printer, "{Symbol Declaration: ");
+    print_element_location(printer, decl);
+    print(printer, "\n");
+
+    printer->indent += 1;
+    for (s64 i = 0; i < decl->symbols.size; i += 1) {
+        print_syntax_identifier(printer, decl->symbols[i]);
+    }
+
+    printer->indent -= 1;
+    print(printer, "Binding to:\n");
+    printer->indent += 1;
+
+    for (s64 i = 0; i < decl->elements.size; i += 1) {
+        print_syntax_element(printer, decl->elements[i]);
+    }
+
+    printer->indent -= 1;
+    print(printer, "}\n");
+}
+
+INTERNAL void print_binary_operator(PrettyPrinter *printer, SyntaxBinaryOperator *op) {
+    print(printer, "{Operator %S: \n", enum_string(op->operator_kind));
+    print(printer, "LHS: ");
+    print_syntax_element(printer, op->lhs);
+    print(printer, "RHS: ");
+    print_syntax_element(printer, op->rhs);
+    print(printer, "}\n");
+}
+
+INTERNAL void print_syntax_element(PrettyPrinter *printer, SyntaxElement *elem) {
+    switch (elem->kind) {
+    case SYNTAX_IDENTIFIER: {
+        print_syntax_identifier(printer, (SyntaxIdentifier*)elem);
+    } break;
+
+    case SYNTAX_INTEGER_LITERAL: {
+        print_syntax_integer(printer, (SyntaxIntegerLiteral*)elem);
+    } break;
+
+    case SYNTAX_BINARY_OPERATOR: {
+        print_binary_operator(printer, (SyntaxBinaryOperator*)elem);
+    } break;
+
+    case SYNTAX_SYMBOL_DECL: {
+        print_symbol_decl(printer, (SyntaxSymbolDeclaration*)elem);
+    } break;
+
+    default:
+        print(printer, "[Unknown syntax element: %d]\n", elem->kind);
+    }
+}
+
+void print_syntax_tree(SyntaxNode *node) {
+    PrettyPrinter printer = {};
+    printer.out = Console.out;
+
+    print_syntax_element(&printer, node->tree);
 }
 

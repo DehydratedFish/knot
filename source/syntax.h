@@ -27,6 +27,20 @@ enum SyntaxOperator {
     OP_COUNT,
 };
 
+inline String enum_string(SyntaxOperator op) {
+    assert(op < OP_COUNT);
+
+    String lookup[OP_COUNT] = {
+        "&",
+        "*",
+        "/",
+        "+",
+        "-",
+    };
+
+    return lookup[op];
+};
+
 enum SyntaxKind {
     SYNTAX_KIND_NONE,
 
@@ -36,6 +50,10 @@ enum SyntaxKind {
     SYNTAX_REFERENCE,
 
     SYNTAX_BINARY_OPERATOR,
+
+    SYNTAX_EXPRESSION_LIST,
+
+    SYNTAX_SYMBOL_DECL,
 
     SYNTAX_KIND_COUNT,
 };
@@ -52,7 +70,7 @@ struct SyntaxElement {
     SourceLocation loc;
 };
 
-struct SyntaxScope {
+struct SyntaxScope : SyntaxElement {
     List<SyntaxNode> nodes;
 };
 
@@ -86,5 +104,14 @@ struct SyntaxBinaryOperator : SyntaxElement {
 
     SyntaxElement *lhs;
     SyntaxElement *rhs;
+};
+
+struct SyntaxExpressionList : SyntaxElement {
+    Array<SyntaxElement*> elements;
+};
+
+struct SyntaxSymbolDeclaration : SyntaxElement {
+    Array<SyntaxIdentifier*> symbols;
+    Array<SyntaxElement*>    elements;
 };
 

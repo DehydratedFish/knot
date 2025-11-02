@@ -6,9 +6,16 @@
 #include "string2.h"
 
 
+INTERNAL void developer_print(String msg) {
+#ifdef DEVELOPER
+    print(msg);
+#endif // DEVELOPER
+}
+
+
 void report_diagnostic(Environment *env, DiagnosticKind kind, SourceLocation location, String message) {
     DiagnosticMessage msg = {
-        {},
+        allocate_string(message),
         env->filename,
         location,
         kind
@@ -94,13 +101,18 @@ s32 application_main(Array<String> args) {
     String source = file_result.content;
     Parser parser = init_parser(file_to_parse, source);
 
-    print("DEBUG: Parsing\n");
+    developer_print("DEBUG: Parsing\n");
     Environment env = {};
     if (!parse_as_knot_code(&parser, &env)) {
         print_diagnostics(&env, source);
-        print("Compiler encountered errors.");
+        print("Compiler encountered errors.\n");
 
         return -1;
+    }
+
+    developer_print("DEBUG: Tree\n");
+    FOR (env.root.nodes, node) {
+        print_syntax_tree(node);
     }
 
     /*

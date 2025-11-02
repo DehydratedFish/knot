@@ -67,6 +67,7 @@ struct Parser {
     SourceLocation loc;
 
     ExpressionBuilder builder;
+    SyntaxScope *current_scope;
 
     Environment *env;
 
@@ -85,4 +86,6 @@ Parser init_parser(String filename, String source);
 
 
 bool parse_as_knot_code(Parser *parser, Environment *env);
+
+void print_syntax_tree(SyntaxNode *node);
 
