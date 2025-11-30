@@ -1,9 +1,15 @@
-#include "list.h"
+#include "knot.h"
+
 #include "platform.h"
 
-#include "knot.h"
 #include "parser.h"
 #include "string2.h"
+
+#include "list.h"
+#include "hash_table.h"
+#include "arena.h"
+
+#include "type_check.h"
 
 
 INTERNAL void developer_print(String msg) {
@@ -22,6 +28,8 @@ void report_diagnostic(Environment *env, DiagnosticKind kind, SourceLocation loc
     };
 
     append(&env->diagnostics, msg);
+
+    if (kind == DIAGNOSTIC_ERROR) env->has_errors = true;
 }
 
 void report_error(Environment *env, SourceLocation location, String message) {
@@ -53,11 +61,8 @@ INTERNAL s32 trim_indentation(String *line) {
 }
 
 
-INTERNAL void print_diagnostics(Environment *env, String source) {
+INTERNAL void print_diagnostics(Environment *env) {
     FOR (env->diagnostics, diag) {
-        String line = find_line(diag->location, source);
-        s32 line_start = trim_indentation(&line);
-
         String prefix = {};
         if (diag->kind == DIAGNOSTIC_NOTE) {
             prefix = "Note: ";
@@ -66,18 +71,62 @@ INTERNAL void print_diagnostics(Environment *env, String source) {
         } else if (diag->kind == DIAGNOSTIC_ERROR) {
             prefix = "Error: ";
         } else {
-            assert(false);
+            die("Unknown DiagnosticKind.");
         }
 
-        print("%S%S:%d:%d: %S\n", prefix, diag->file, diag->location.line, diag->location.column, diag->message);
-        print("%S\n", line);
+        if (diag->location.pos == -1) {
+            print("%S%S: %S\n", prefix, diag->file, diag->message);
+        } else {
+            String line = find_line(diag->location, env->source);
+            s32 line_start = trim_indentation(&line);
 
-        s32 spaces = diag->location.column - line_start - 1;
-        for (s32 i = 0; i < spaces; i += 1) {
-            print(" ");
+            print("%S%S:%d:%d: %S\n", prefix, diag->file, diag->location.line, diag->location.column, diag->message);
+            print("%S\n", line);
+
+            s32 spaces = diag->location.column - line_start - 1;
+            for (s32 i = 0; i < spaces; i += 1) {
+                print(" ");
+            }
+            print("^\n\n");
         }
-        print("^\n\n");
     }
+}
+
+
+// TODO: I don't like the intermediate array very much but for now it must suffice.
+//       Also the Arena should be growable. What about long strings? Probably should not be allowed.
+INTERNAL HashTable<String, Atom> AtomLookup;
+INTERNAL List<String>            AtomList;
+INTERNAL MemoryArena             AtomStorage;
+
+INTERNAL void init_atom_storage() {
+    init(&AtomStorage, MEGABYTES(1));
+}
+
+INTERNAL void destroy_atom_storage() {
+    destroy(&AtomStorage);
+    destroy(&AtomList);
+    destroy(&AtomLookup);
+}
+
+Atom generate_atom(String str) {
+    auto *found = find(&AtomLookup, str);
+    if (found) return *found;
+
+    String new_atom = {};
+    new_atom.data = (u8*)allocate_from_arena(&AtomStorage, str.size, 0, 0);
+    new_atom.size = str.size;
+
+    Atom atom = {AtomList.size};
+    append(&AtomList, new_atom);
+
+    return *insert(&AtomLookup, new_atom, atom);
+}
+
+String get_string(Atom atom) {
+    BOUNDS_CHECK(0, AtomList.size, atom.handle, "Atom lookup out of bounds.");
+
+    return AtomList[atom.handle];
 }
 
 s32 application_main(Array<String> args) {
@@ -88,42 +137,35 @@ s32 application_main(Array<String> args) {
         return -1;
     }
 
+    init_atom_storage();
+    DEFER(destroy_atom_storage());
+
     // TODO: Change backslashes to slashes.
     file_to_parse = args[1];
 
-    PlatformReadResult file_result = platform_read_entire_file(file_to_parse);
-    if (file_result.error != PLATFORM_READ_OK) {
-        print("Could not open or read file %S.\n", file_to_parse);
-
-        return -1;
-    }
-
-    String source = file_result.content;
-    Parser parser = init_parser(file_to_parse, source);
-
     developer_print("DEBUG: Parsing\n");
-    Environment env = {};
-    if (!parse_as_knot_code(&parser, &env)) {
-        print_diagnostics(&env, source);
+    Environment env = parse_knot_file(file_to_parse);
+    if (env.has_errors) {
+        print_diagnostics(&env);
         print("Compiler encountered errors.\n");
 
         return -1;
     }
 
+    /*
     developer_print("DEBUG: Tree\n");
     FOR (env.root.nodes, node) {
         print_syntax_tree(node);
     }
+    */
 
-    /*
-    print("\nDEBUG: Type checking.\n");
+    developer_print("\nDEBUG: Type checking.\n");
     if (!type_check(&env)) {
-        print_diagnostics(&env, source);
+        print_diagnostics(&env);
         print("Compiler encountered errors.");
 
         return -1;
     }
-    */
 
     /*
        print("\nDEBUG: Interpreting\n");

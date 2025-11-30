@@ -7,7 +7,7 @@ executable: knot {
     symbols: "DEVELOPER", "BOUNDS_CHECKING";
     include: "source";
 
-    sources: /"source", "knot.cpp", "parser.cpp";
+    sources: /"source", "knot.cpp", "parser.cpp", "type_check.cpp";
 
     dependencies: debug, mountain.core;
 }

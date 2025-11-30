@@ -217,7 +217,13 @@ INTERNAL Token parse_control(Parser *parser) {
         token.kind = TOKEN_DOT;
     } break;
     case ',': { token.kind = TOKEN_COMMA; } break;
-    case '=': { token.kind = TOKEN_EQUAL; } break;
+    case '=': { 
+        if (match_char(parser, '=')) {
+            token.kind = TOKEN_EQUAL;
+            token.content.size += 1;
+            break;
+        }
+        token.kind = TOKEN_EQUAL_SIGN; } break;
     case ':': {
         token.kind = TOKEN_COLON;
     } break;
@@ -400,436 +406,6 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 }
 
 
-/*
-INTERNAL Type parse_type_specifier(Parser *parser) {
-    Type type = {};
-
-    consume(parser, TOKEN_IDENTIFIER, "Expected type name.");
-    type.name = parser->previous_token.content;
-
-    if (match(parser, TOKEN_LEFT_BRACKET)) {
-        type.kind = TYPE_ARRAY;
-        if (match(parser, TOKEN_RIGHT_BRACKET)) {
-            type.array_type.size = -1;
-        } else if (match(parser, TOKEN_INTEGER)) {
-            type.array_type.size = to_s64(parser->previous_token.content);
-
-            consume(parser, TOKEN_RIGHT_BRACKET, "Expected ] in array type declaration");
-        } else {
-            parse_error(parser, parser->current_token.loc, "Array count needs to be an integer literal.");
-        }
-    }
-
-    while (match(parser, TOKEN_AMPERSAND)) {
-        type.pointer_depth += 1;
-    }
-
-    return type;
-}
-
-INTERNAL b32 parse_type_list(Parser *parser) {
-    s64 index = 0;
-
-    do {
-        if (parser->current_token.kind == TOKEN_COLON ||
-            parser->current_token.kind == TOKEN_EQUAL) {
-            break;
-        }
-        
-        if (index >= parser->decl_or_assign_list.size) {
-            parse_error(parser, parser->current_token.loc, "Too many type specifiers.");
-            return false;
-        }
-
-        SourceItem *item = &parser->env->source_items[parser->decl_or_assign_list[index]];
-        item->type = parse_type_specifier(parser);
-
-        index += 1;
-    } while (match(parser, TOKEN_COMMA));
-
-    return true;
-}
-
-INTERNAL b32 string_number_smaller_as(String number, String maximum) {
-    if (number.size < maximum.size) return true;
-    if (number.size > maximum.size) return false;
-
-    for (s32 i = 0; i < number.size; i += 1) {
-        if (number[i] > maximum[i]) return false;
-    }
-
-    return true;
-}
-
-INTERNAL b32 parse_number_expr(Parser *parser) {
-    u32 kind = parser->current_token.kind;
-    advance_token(parser);
-
-    if (kind == TOKEN_INTEGER) {
-        if (!string_number_smaller_as(parser->previous_token.content, "18446744073709551615")) {
-            parse_error(parser, parser->previous_token.loc, "Integer literal is too large to fit into u64.");
-            return false;
-        }
-
-        emit_integer_literal(parser->env, parser->previous_token.content, parser->previous_token.loc);
-
-        return true;
-    } else if (kind == TOKEN_FLOAT) {
-        die("Currently no float literals implemented in parser.");
-    } else {
-        parse_error(parser, parser->current_token.loc, "Expected numerical expression.");
-    }
-
-    return false;
-}
-
-INTERNAL b32 parse_string_expr(Parser *parser) {
-    consume(parser, TOKEN_STRING, "Expected string.");
-
-    emit_string_literal(parser->env, parser->previous_token.content, parser->previous_token.loc);
-    return true;
-}
-
-INTERNAL b32 parse_identifier_expr(Parser *parser) {
-    if (!consume(parser, TOKEN_IDENTIFIER, "Expected identifier.")) return 0;
-
-    emit_identifier(parser->env, parser->previous_token.content, parser->previous_token.loc);
-    return true;
-}
-
-
-enum {
-    PREC_NONE,
-    PREC_ASSIGNMENT,
-    PREC_TERM,
-    PREC_FACTOR,
-    PREC_UNARY,
-    PREC_RANGE,
-    PREC_CALL,
-    PREC_DOT,
-    PREC_PRIMARY
-};
-//INTERNAL b32 parse_statement(Parser *parser);
-//INTERNAL b32 parse_single_expression(Parser *parser, u32 precedence);
-
-//INTERNAL Array<AstExpression*> parse_expression(Parser *parser);
-//INTERNAL AstExpression *parse_array_declaration(Parser *parser);
-
-
-INTERNAL b32 parse_reference(Parser *parser) {
-    consume(parser, TOKEN_AMPERSAND, "Expected & .");
-    emit_instruction(parser->env, TAKE_REFERENCE);
-    
-    return parse_single_expression(parser, PREC_UNARY);
-}
-
-INTERNAL b32 parse_dereference(Parser *parser, AstExpression *pointer) {
-    AstDereference *deref = ALLOC_NODE(AstDereference, AST_DEREFERENCE);
-    deref->location = parser->previous_token.loc;
-    deref->expr = pointer;
-
-    return deref;
-}
-
-INTERNAL u32 operator_precedence(u32 kind) {
-    switch (kind) {
-    case TOKEN_PLUS: return PREC_TERM;
-    case TOKEN_MINUS: return PREC_TERM;
-    case TOKEN_ASTERISK: return PREC_FACTOR;
-
-    case TOKEN_EQUAL: return PREC_ASSIGNMENT;
-
-    case TOKEN_AMPERSAND: return PREC_UNARY;
-
-    case TOKEN_DOUBLE_DOT: return PREC_RANGE;
-
-    case TOKEN_LEFT_PARENTHESIS: return PREC_CALL;
-    }
-
-    return PREC_NONE;
-}
-
-INTERNAL u32 PrecedenceTable[] = {
-    PREC_TERM,   // BINARY_OP_ADD,
-    PREC_TERM,   // BINARY_OP_SUB,
-    PREC_FACTOR, // BINARY_OP_MUL,
-    PREC_FACTOR, // BINARY_OP_DIV,
-};
-
-INTERNAL b32 parse_binary_operator(Parser *parser, AstExpression *lhs, u32 op) {
-    AstBinaryOperator *bin = ALLOC_NODE(AstBinaryOperator, AST_BINARY_OPERATOR);
-    bin->location = parser->previous_token.loc;
-
-    bin->op = op;
-    bin->lhs = lhs;
-    bin->rhs = parse_single_expression(parser, PrecedenceTable[op] + 1);
-
-    return bin;
-}
-
-INTERNAL AstExpression *parse_assignment(Parser *parser, AstExpression *thing) {
-    AstAssignment *ass = ALLOC_NODE(AstAssignment, AST_ASSIGNMENT);
-    ass->location = parser->previous_token.loc;
-
-    ass->thing = thing;
-    ass->value = parse_single_expression(parser, PREC_ASSIGNMENT);
-
-    return ass;
-}
-
-INTERNAL AstExpression *parse_range_expression(Parser *parser, AstExpression *lhs) {
-    AstRange *range = ALLOC_NODE(AstRange, AST_RANGE);
-    range->location = parser->previous_token.loc;
-
-    range->start = lhs;
-    range->end = parse_single_expression(parser, PREC_RANGE + 1);
-
-    return range;
-}
-
-INTERNAL AstExpression *parse_grouping(Parser *parser) {
-    AstExpression *expr = 0;
-    consume(parser, TOKEN_LEFT_PARENTHESIS, "Expected ( .");
-
-    expr = parse_single_expression(parser, PREC_ASSIGNMENT);
-
-    consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) .");
-
-    return expr;
-}
-
-INTERNAL AstExpression *parse_negation(Parser *parser) {
-    consume(parser, TOKEN_MINUS, "Missing - .");
-
-    AstNegate *negate = ALLOC_NODE(AstNegate, AST_NEGATE);
-    negate->expr = parse_single_expression(parser, PREC_UNARY);
-    negate->location = parser->previous_token.loc;
-
-    return negate;
-}
-
-INTERNAL DArray<AstExpression*> CallArgumentBuilder;
-INTERNAL AstExpression *parse_call(Parser *parser, AstExpression *expr) {
-    AstCall *call = ALLOC_NODE(AstCall, AST_CALL);
-    call->functor = expr;
-    call->location = expr->location;
-
-    if (!match(parser, TOKEN_RIGHT_PARENTHESIS)) {
-        CallArgumentBuilder.size = 0;
-
-        do {
-            AstExpression *expr = parse_single_expression(parser, PREC_ASSIGNMENT);
-            if (expr) {
-                append(CallArgumentBuilder, expr);
-            } else {
-                return 0;
-            }
-        } while (match(parser, TOKEN_COMMA));
-
-        call->arguments = allocate_array(CallArgumentBuilder);
-        consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) in function call.");
-    }
-
-    return call;
-}
-
-INTERNAL AstExpression *parse_variable_declaration(Parser *parser, Array<AstExpression> names) {
-    consume(parser, TOKEN_IDENTIFIER, "Identifier expected in variable declaration.");
-
-    for (s64 i = 0; i < names.size; i += 1) {
-        if (names[i].kind != AST_IDENTIFIER) {
-            parse_error(parser, names[i].location, "Variable declaration expects an identifier.");
-        }
-    }
-
-    AstVariableDeclaration *decl = ALLOC_NODE(AstVariableDeclaration, AST_VARIABLE_DECLARATION);
-    decl->names = names;
-
-    decl->location = parser->current_token.loc;
-    consume(parser, TOKEN_COLON, "Expected : in variable declaration.");
-
-    if (current_token_is(parser, TOKEN_IDENTIFIER)) {
-        decl->type = parse_type_specifier(parser).type;
-    }
-
-    return decl;
-}
-
-INTERNAL AstLambda *parse_lambda(Parser *parser, AstIdentifier **name = 0);
-
-INTERNAL AstExpression *parse_single_expression(Parser *parser, u32 precedence) {
-    AstExpression *lhs;
-
-    switch (parser->current_token.kind) {
-    case TOKEN_INTEGER:
-    case TOKEN_FLOAT: {
-        lhs = parse_number_expr(parser);
-    } break;
-
-    case TOKEN_STRING: {
-        lhs = parse_string_expr(parser);
-    } break;
-
-    case TOKEN_IDENTIFIER: {
-        lhs = parse_identifier_expr(parser);
-    } break;
-
-    case TOKEN_LEFT_BRACKET: {
-        lhs = parse_array_declaration(parser);
-    } break;
-
-    case TOKEN_AMPERSAND: {
-        lhs = parse_reference(parser);
-    } break;
-
-    case TOKEN_MINUS: {
-        lhs = parse_negation(parser);
-    } break;
-
-    case TOKEN_LEFT_PARENTHESIS: {
-        if (peek_token(parser, 2).kind == TOKEN_COLON ||
-            peek_token(parser, 1).kind == TOKEN_RIGHT_PARENTHESIS) {
-
-            // TODO: Still declare the named lambda or just keep ignoring the name?
-            lhs = parse_lambda(parser, 0);
-        } else {
-            lhs = parse_grouping(parser);
-        }
-    } break;
-
-    default:
-        parse_error(parser, parser->current_token.loc, "Expected expression.");
-        advance_token(parser);
-        return 0;
-    }
-
-    while (precedence <= operator_precedence(parser->current_token.kind)) {
-        advance_token(parser);
-
-        switch (parser->previous_token.kind) {
-        case TOKEN_PLUS: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_ADD); } break;
-        case TOKEN_MINUS: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_SUB); } break;
-        case TOKEN_ASTERISK: { lhs = parse_binary_operator(parser, lhs, BINARY_OP_MUL); } break;
-
-        case TOKEN_AMPERSAND: { lhs = parse_dereference(parser, lhs); } break;
-
-        case TOKEN_EQUAL: { lhs = parse_assignment(parser, lhs); } break;
-
-        case TOKEN_DOUBLE_DOT: { lhs = parse_range_expression(parser, lhs); } break;
-
-        case TOKEN_LEFT_PARENTHESIS: { lhs = parse_call(parser, lhs); } break;
-
-        default:
-            parse_error(parser, parser->previous_token.loc, "Unknown binary operator.");
-            advance_token(parser);
-        }
-    }
-
-    return lhs;
-}
-
-INTERNAL DArray<AstExpression*> ExpressionBuilder;
-
-INTERNAL Array<AstExpression*> parse_expression(Parser *parser) {
-    ExpressionBuilder.size = 0;
-
-    do {
-        append(ExpressionBuilder, parse_single_expression(parser, PREC_ASSIGNMENT));
-    } while (match(parser, TOKEN_COMMA));
-
-    return allocate_array(ExpressionBuilder);
-}
-
-
-INTERNAL Instruction Map[OP_COUNT] = {
-    TAKE_REFERENCE,
-
-    MUL,
-    DIV,
-
-    ADD,
-    SUB,
-};
-
-INTERNAL String MapString[OP_COUNT] = {
-    "&",
-
-    "*",
-    "/",
-
-    "+",
-    "-",
-};
-*/
-
-
-/*
-INTERNAL List<OperatorInfo> OperatorStack;
-
-INTERNAL void push_operator(Operator op, SourceLocation loc) {
-    append(&OperatorStack, {op, loc});
-}
-
-*/
-
-/*
-INTERNAL b32 parse_struct_declaration(Parser *parser) {
-    consume(parser, TOKEN_KEYWORD_STRUCT, "Missing keyword struct.");
-
-    emit_instruction(parser->env, STRUCT_DECLARATION);
-    emit_source_item(parser->env, parser->previous_token.content, parser->previous_token.loc);
-
-    Backpatch fields = backpatch<s32>(parser->env);
-
-    s32 field_count = 0;
-    DEFER(fill_backpatch(&fields, &field_count, sizeof(field_count)));
-
-    if (!consume(parser, TOKEN_LEFT_BRACE, "Missing { in struct declaration.")) return false;
-    parser->brace_count += 1;
-
-    Token left_brace = parser->previous_token;
-    if (match(parser, TOKEN_RIGHT_BRACE)) {
-        // TODO: Is an empty struct an error?
-
-        parser->brace_count -= 1;
-        return true;
-    }
-
-    do {
-        SourceItem field = {};
-
-        if (!match(parser, TOKEN_IDENTIFIER)) {
-            parse_error(parser, parser->current_token.loc, "Struct field missing a name.");
-            return false;
-        } else {
-            field.name = parser->previous_token.content;
-            field.loc  = parser->previous_token.loc;
-        }
-
-        if (!consume(parser, TOKEN_COLON, "Missing : in field declaration.")) return false;
-        field.type = parse_type_specifier(parser);
-
-        if (!consume(parser, TOKEN_SEMICOLON, "Missing ; to end struct field.")) return false;
-
-        emit_source_item(parser->env, &field);
-        field_count += 1;
-    } while (!current_token_is(parser, TOKEN_RIGHT_BRACE) && !current_token_is(parser, TOKEN_END_OF_INPUT));
-
-    if (current_token_is(parser, TOKEN_END_OF_INPUT)) {
-        parse_error(parser, left_brace.loc, "Missing } for struct declaration.");
-        return false;
-    }
-
-    if (consume(parser, TOKEN_RIGHT_BRACE, "Missing } to end declaration of struct.")) {
-        parser->brace_count -= 1;
-    }
-
-    return true;
-}
-*/
-
-INTERNAL b32 parse_statement(Parser *parser);
-
 struct OperatorInfo {
     SyntaxOperator op;
     SourceLocation loc;
@@ -840,10 +416,13 @@ INTERNAL void add_operator(Parser *parser, Token *token) {
 
     switch (token->kind) {
     case TOKEN_AMPERSAND: info.op = OP_REFERENCE; break;
+    case TOKEN_DOT:       info.op = OP_DOT;       break;
     case TOKEN_PLUS:      info.op = OP_PLUS;      break;
     case TOKEN_MINUS:     info.op = OP_MINUS;     break;
     case TOKEN_ASTERISK:  info.op = OP_MULTIPLY;  break;
     case TOKEN_SLASH:     info.op = OP_DIVIDE;    break;
+
+    case TOKEN_EQUAL:     info.op = OP_EQUAL;     break;
 
     default:
         die("Token is not an operator.");
@@ -868,7 +447,8 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
         case OP_PLUS:
         case OP_MINUS:
         case OP_MULTIPLY:
-        case OP_DIVIDE: {
+        case OP_DIVIDE: 
+        case OP_EQUAL: {
             SyntaxBinaryOperator *bin = ALLOC(DefaultAllocator, SyntaxBinaryOperator, 1);
             bin->kind = SYNTAX_BINARY_OPERATOR;
             bin->loc  = last.loc;
@@ -885,10 +465,37 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
             add_operand(parser, bin);
         } break;
 
+        case OP_DOT: {
+            auto *operands = &parser->builder.operand_stack;
+            assert(operands->size >= 2);
+
+            SyntaxElement *lhs = (*operands)[-2];
+            SyntaxElement *rhs = (*operands)[-1];
+
+            if (lhs->kind != SYNTAX_IDENTIFIER) {
+                report_error(parser->env, lhs->loc, "Left of . is not an identifier.");
+                return;
+            }
+            if (rhs->kind != SYNTAX_IDENTIFIER) {
+                report_error(parser->env, rhs->loc, "Right of . is not an identifier.");
+                return;
+            }
+
+            SyntaxDotOperator *dot = ALLOC(DefaultAllocator, SyntaxDotOperator, 1);
+            dot->kind = SYNTAX_DOT;
+            dot->loc  = last.loc;
+
+            dot->lhs = (SyntaxIdentifier*)lhs;
+            dot->rhs = (SyntaxIdentifier*)rhs;
+
+            operands->size -= 2;
+            add_operand(parser, dot);
+        } break;
+
         case OP_REFERENCE: {
             SyntaxReference *ref = ALLOC(DefaultAllocator, SyntaxReference, 1);
-            ref->kind  = SYNTAX_REFERENCE;
-            ref->loc   = last.loc;
+            ref->kind = SYNTAX_REFERENCE;
+            ref->loc  = last.loc;
 
             auto *operands = &parser->builder.operand_stack;
             assert(operands->size >= 1);
@@ -899,6 +506,9 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
 
             add_operand(parser, ref);
         } break;
+
+        default:
+            die("Unhandled reduce for operator.\n");
         }
 
         stack->size -= 1;
@@ -969,6 +579,16 @@ INTERNAL b32 parse_binary_expression(Parser *parser) {
         add_operator(parser, &parser->current_token);
     } break;
 
+    case TOKEN_EQUAL: {
+        reduce(parser, OP_EQUAL);
+        add_operator(parser, &parser->current_token);
+    } break;
+
+    case TOKEN_DOT: {
+        reduce(parser, OP_DOT);
+        add_operator(parser, &parser->current_token);
+    } break;
+
     default:
         return false;
     }
@@ -979,8 +599,12 @@ INTERNAL b32 parse_binary_expression(Parser *parser) {
 }
 
 INTERNAL void parse_expression(Parser *parser) {
+    parser->builder.is_binary = false;
+    parser->builder.operand_stack.size  = 0;
+    parser->builder.operator_stack.size = 0;
+
     b32 keep_parsing = true;
-    while (keep_parsing == true) {
+    while (keep_parsing) {
         if (parser->builder.is_binary) {
             keep_parsing = parse_binary_expression(parser);
         } else {
@@ -991,47 +615,115 @@ INTERNAL void parse_expression(Parser *parser) {
     reduce(parser);
 }
 
-INTERNAL b32 parse_expressions(Parser *parser) {
-    ExpressionBuilder *builder = &parser->builder;
-
-    builder->is_binary = false;
-    builder->expressions.size    = 0;
-    builder->operand_stack.size  = 0;
-    builder->operator_stack.size = 0;
+INTERNAL SyntaxElement *parse(Parser *parser);
+INTERNAL SyntaxElement *parse_syntax_element(Parser *parser);
+INTERNAL b32 parse_syntax_list(Parser *parser) {
+    parser->list_builder.size = 0;
 
     do {
-        parse_expression(parser);
-        if (builder->operand_stack.size == 0) {
-            report_error(parser->env, parser->current_token.loc, "Expected expression.");
+        SyntaxElement *element = parse_syntax_element(parser);
+        if (!element) {
             return false;
+        } else {
+            append(&parser->list_builder, element);
         }
-        assert(builder->operand_stack.size  == 1);
-        assert(builder->operator_stack.size == 0);
-
-        append(&builder->expressions, builder->operand_stack[0]);
-        builder->operand_stack.size = 0;
     } while(match(parser, TOKEN_COMMA));
 
     return true;
+}
+
+INTERNAL SyntaxElement *parse_return(Parser *parser) {
+    if (!consume(parser, TOKEN_KEYWORD_RETURN, "Expectes return keyword.")) return 0;
+    SourceLocation loc = parser->previous_token.loc;
+
+    if (!parse_syntax_list(parser)) return 0;
+
+    // TODO: Empty returns.
+    SyntaxReturn *ret = ALLOC(DefaultAllocator, SyntaxReturn, 1);
+    ret->kind = SYNTAX_RETURN;
+    ret->loc  = loc;
+    ret->returns = create_array(parser->list_builder);
+
+    parser->list_builder.size = 0;
+
+    return ret;
+}
+
+INTERNAL b32 parse_scope(Parser *parser, SyntaxScope *scope) {
+    scope->parent = parser->env->current_scope;
+    parser->env->current_scope = scope;
+
+    DEFER(parser->env->current_scope = scope->parent;);
+
+    b32 is_root_scope = parser->env->current_scope->parent == 0;
+    if (!is_root_scope) {
+        if (!consume(parser, TOKEN_LEFT_BRACE, "Expected { to start scope.")) return false;
+        parser->brace_count += 1;
+    }
+
+    while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
+        while (match(parser, TOKEN_SEMICOLON));
+        if (!is_root_scope && match(parser, TOKEN_RIGHT_BRACE)) {
+            parser->brace_count -= 1;
+            break;
+        }
+
+        SyntaxElement *elem = 0;
+        // NOTE: Return statements can only be at the top level of the scope.
+        if (!is_root_scope && current_token_is(parser, TOKEN_KEYWORD_RETURN)) {
+            elem = parse_return(parser);
+        } else {
+            elem = parse(parser);
+        }
+        if (!elem) {
+            return false;
+        } else {
+            append(&parser->env->current_scope->elements, elem);
+        }
+    }
+
+    return true;
+}
+
+INTERNAL SyntaxElement *parse_scope(Parser *parser) {
+    SyntaxScope *scope = ALLOC(DefaultAllocator, SyntaxScope, 1);
+    if (!parse_scope(parser, scope)) {
+        DEALLOC(DefaultAllocator, scope, 1);
+        return 0;
+    }
+
+    return scope;
+}
+
+// NOTE: Because casting templates is not possible in C++ I need to resort to this thing.
+INTERNAL Array<SyntaxIdentifier*> create_identifier_list(List<SyntaxElement*> list) {
+    auto tmp = create_array(list);
+
+    Array<SyntaxIdentifier*> arr = {};
+    arr.data = (SyntaxIdentifier**)tmp.data;
+    arr.size = tmp.size;
+
+    return arr;
 }
 
 INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
     b32 check = match(parser, TOKEN_COLON);
     assert(check);
 
-    // TODO: Type declarations.
+    // TODO: Type specifiers.
 
     SyntaxElement *result = 0;
     if (match(parser, TOKEN_COLON)) {
         SourceLocation loc = parser->previous_token.loc;
 
-        if (parser->builder.expressions.size == 0) {
+        if (parser->list_builder.size == 0) {
             report_error(parser->env, parser->previous_token.loc, "Declaration needs identifiers to bind to.");
             return result;
         }
 
-        for (s64 i = 0; i < parser->builder.expressions.size; i += 1) {
-            auto *expression = parser->builder.expressions[i];
+        auto *builder = &parser->list_builder;
+        for (s64 i = 0; i < parser->list_builder.size; i += 1) {
+            auto *expression = parser->list_builder[i];
 
             if (expression->kind != SYNTAX_IDENTIFIER) {
                 report_error(parser->env, expression->loc, "Declaration needs identifier to bind.");
@@ -1043,22 +735,43 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
         decl->kind = SYNTAX_SYMBOL_DECL;
         decl->loc  = loc;
 
-        // TODO: This is ugly as hell.
-        auto tmp = create_array(parser->builder.expressions);
-        decl->symbols.data = (SyntaxIdentifier**)tmp.data;
-        decl->symbols.size = tmp.size;
-        parser->builder.expressions.size = 0;
+        decl->symbols = create_identifier_list(parser->list_builder);
+        parser->list_builder.size = 0;
 
-        if (!parse_expressions(parser)) {
-            report_error(parser->env, parser->current_token.loc, "Expected expression (list).");
-
+        if (!parse_syntax_list(parser)) {
             // TODO: Free array decl->symbols and decl.
 
             return result;
         }
 
-        decl->elements = create_array(parser->builder.expressions);
-        parser->builder.expressions.size = 0;
+        decl->elements = create_array(parser->list_builder);
+        parser->list_builder.size = 0;
+
+        result = decl;
+    } else if (match(parser, TOKEN_EQUAL_SIGN)) {
+        SourceLocation loc = parser->previous_token.loc;
+
+        if (parser->list_builder.size == 0) {
+            report_error(parser->env, parser->previous_token.loc, "Declaration needs identifiers to bind to.");
+            return result;
+        }
+
+        // TODO: Check if all elements are assignable.
+        SyntaxVariableDeclaration *decl = ALLOC(DefaultAllocator, SyntaxVariableDeclaration, 1);
+        decl->kind = SYNTAX_VARIABLE_DECL;
+        decl->loc  = loc;
+
+        decl->variables = create_identifier_list(parser->list_builder);
+        parser->list_builder.size = 0;
+
+        if (!parse_syntax_list(parser)) {
+            // TODO: Free array decl->symbols and decl.
+
+            return result;
+        }
+
+        decl->expressions = create_array(parser->list_builder);
+        parser->list_builder.size = 0;
 
         result = decl;
     } else {
@@ -1066,6 +779,115 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
     }
 
     return result;
+}
+
+INTERNAL b32 parse_type_specifier(Parser *parser, Type *type) {
+    if (!consume(parser, TOKEN_IDENTIFIER, "Missing type name.")) return false;
+    type->name = parser->previous_token.content;
+    type->kind = TYPE_SPECIFIER;
+
+    while (match(parser, TOKEN_AMPERSAND)) {
+        type->pointer_depth += 1;
+    }
+
+    return true;
+}
+
+INTERNAL b32 parse_struct_member(Parser *parser, SyntaxStructMember *member) {
+    if (!consume(parser, TOKEN_IDENTIFIER, "Expected identifier to start struct member.")) return false;
+
+    member->ident.kind = SYNTAX_IDENTIFIER;
+    member->ident.name = parser->previous_token.content;
+    member->ident.loc  = parser->previous_token.loc;
+
+    if (!consume(parser, TOKEN_COLON, "Expected type specifier for struct member.")) return false;
+    member->loc = parser->current_token.loc;
+
+    if (!parse_type_specifier(parser, &member->type)) return false;
+
+    return true;
+}
+
+INTERNAL SyntaxElement *parse_struct_declaration(Parser *parser) {
+    b32 check = match(parser, TOKEN_KEYWORD_STRUCT);
+    assert(check);
+
+    Token keyword = parser->previous_token;
+
+    if (!consume(parser, TOKEN_LEFT_BRACE, "Missing struct body.")) return 0;
+    parser->brace_count += 1;
+
+    // TODO: Keep buffer around.
+    List<SyntaxStructMember> fields = {};
+    DEFER(destroy(&fields));
+
+    do {
+        SyntaxStructMember *member = append(&fields);
+        member->kind = SYNTAX_STRUCT_FIELD;
+        if (!parse_struct_member(parser, member)) return 0;
+
+        while (match(parser, TOKEN_SEMICOLON));
+    } while (!match(parser, TOKEN_RIGHT_BRACE));
+    parser->brace_count -= 1;
+
+    SyntaxStruct *s = ALLOC(DefaultAllocator, SyntaxStruct, 1);
+    s->kind    = SYNTAX_STRUCT_DECL;
+    s->loc     = keyword.loc;
+    s->members = create_array(fields);
+
+    return s;
+}
+
+INTERNAL SyntaxElement *parse_lambda_declaration(Parser *parser) {
+    if (!consume(parser, TOKEN_LEFT_PARENTHESIS, "Expected lambda declaration.")) return 0;
+
+    SourceLocation loc = parser->previous_token.loc;
+
+    List<SyntaxLambdaParameter> param_list = {};
+    DEFER(destroy(&param_list));
+
+    List<SyntaxElement> return_list = {};
+    DEFER(destroy(&return_list));
+
+    do {
+        if (current_token_is(parser, TOKEN_RIGHT_PARENTHESIS)) break;
+
+        if (!consume(parser, TOKEN_IDENTIFIER, "Expected argument name.")) return 0;
+        Token name_token = parser->previous_token;
+
+        if (!consume(parser, TOKEN_COLON, "Expected type specifier for argument.")) return 0;
+
+        SyntaxLambdaParameter *param = append(&param_list);
+        param->kind = SYNTAX_LAMBDA_ARGUMENT;
+        param->loc = parser->current_token.loc;
+        param->name = name_token.content;
+        param->name_loc = name_token.loc;
+
+        if (!parse_type_specifier(parser, &param->type)) return 0;
+    } while (match(parser, TOKEN_COMMA));
+
+    if (!consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) in function declaration.")) return 0;
+
+    if (match(parser, TOKEN_COLON)) {
+        do {
+            // NOTE: No kind set. Returns are SyntaxElement(s) instead of Type(s) because
+            //       the SourceLocation is needed for type checking.
+            SyntaxElement *elem = append(&return_list);
+            elem->loc = parser->current_token.loc;
+            if (!parse_type_specifier(parser, &elem->type)) return 0;
+        } while (match(parser, TOKEN_COMMA));
+    }
+
+    SyntaxLambda *lambda = ALLOC(DefaultAllocator, SyntaxLambda, 1);
+    lambda->kind = SYNTAX_LAMBDA_DECL;
+    lambda->loc  = loc;
+
+    lambda->params  = create_array(param_list);
+    lambda->returns = create_array(return_list);
+
+    if (!parse_scope(parser, &lambda->scope)) return 0;
+
+    return lambda;
 }
 
 /*
@@ -1197,26 +1019,46 @@ INTERNAL b32 parse_declaration(Parser *parser) {
 */
 
 INTERNAL SyntaxElement *parse_syntax_element(Parser *parser) {
+    if (current_token_is(parser, TOKEN_KEYWORD_STRUCT)) {
+        return parse_struct_declaration(parser);
+    }
+
+    if (current_token_is(parser, TOKEN_LEFT_PARENTHESIS)) {
+        if (peek_token(parser, 2).kind == TOKEN_COLON ||
+            peek_token(parser, 1).kind == TOKEN_RIGHT_PARENTHESIS) {
+            return parse_lambda_declaration(parser);
+        }
+    }
+
+    parse_expression(parser);
+
+    if (parser->builder.operand_stack.size != 1) {
+        report_error(parser->env, parser->current_token.loc, "Expected expression.");
+        return 0;
+    }
+
+    return parser->builder.operand_stack[0];
+}
+
+INTERNAL SyntaxElement *parse(Parser *parser) {
     while (parser->current_token.kind == TOKEN_SEMICOLON) {
         advance_token(parser);
     }
 
-    if (!parse_expressions(parser)) {
-        report_error(parser->env, parser->current_token.loc, "Expected expression (list).");
+    if (!parse_syntax_list(parser)) {
         return 0;
     }
-    assert(parser->builder.expressions.size > 0);
 
-    if (parser->current_token.kind == TOKEN_COLON) {
+    if (current_token_is(parser, TOKEN_COLON)) {
         return parse_declaration(parser);
     }
 
-    SyntaxExpressionList *list = ALLOC(DefaultAllocator, SyntaxExpressionList, 1);
-    list->kind = SYNTAX_EXPRESSION_LIST;
-    list->loc  = parser->builder.expressions[0]->loc;
-    list->elements = create_array(parser->builder.expressions);
+    if (parser->list_builder.size == 1) {
+        return parser->list_builder[0];
+    }
 
-    return list;
+    report_error(parser->env, parser->current_token.loc, "Unused list.");
+    return 0;
 }
 
 INTERNAL void synchronize(Parser *parser) {
@@ -1259,29 +1101,20 @@ INTERNAL void synchronize(Parser *parser) {
     }
 }
 
-INTERNAL void add_to_current_node(Parser *parser, SyntaxElement *element) {
-    assert(parser->current_scope->nodes.size != 0);
-
-    SyntaxNode *node = &parser->current_scope->nodes[-1];
-    node->tree = element;
-}
-
 bool parse_as_knot_code(Parser *parser, Environment *env) {
     bool has_error = false;
 
     env->filename = parser->filename;
     parser->env = env;
-    parser->current_scope = &env->root;
+    parser->env->current_scope = &env->root;
 
     while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
-        append(&parser->current_scope->nodes);
-
-        SyntaxElement *elem = parse_syntax_element(parser);
+        SyntaxElement *elem = parse(parser);
         if (!elem) {
             has_error = true;
             synchronize(parser);
         } else {
-            add_to_current_node(parser, elem);
+            append(&parser->env->current_scope->elements, elem);
         }
     }
 
@@ -1289,6 +1122,36 @@ bool parse_as_knot_code(Parser *parser, Environment *env) {
 }
 
 
+Environment parse_knot_file(String filename) {
+    Environment env = {};
+    env.filename = filename;
+    
+    PlatformReadResult read_result = platform_read_entire_file(filename);
+    if (read_result.error != PLATFORM_READ_OK) {
+        report_error(&env, {-1}, t_format("Can't open or read this file.", filename));
+        return env;
+    };
+
+    env.source = read_result.content;
+
+    Parser parser = init_parser(filename, read_result.content);
+    parser.env = &env;
+
+    // TODO: Report error?
+    parse_scope(&parser, &env.root);
+    /*
+    while (!current_token_is(&parser, TOKEN_END_OF_INPUT)) {
+        SyntaxElement *elem = parse(&parser);
+        if (!elem) {
+            synchronize(&parser);
+        } else {
+            append(&parser.env->current_scope->elements, elem);
+        }
+    }
+    */
+
+    return env;
+}
 
 
 

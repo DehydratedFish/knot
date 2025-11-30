@@ -1,10 +1,7 @@
 .vs
+.bricks
 build
 knot
-dependencies
-
-build_gcc.sh
-build_msvc.bat
 
 compile_flags.txt
 

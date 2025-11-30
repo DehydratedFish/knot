@@ -17,7 +17,7 @@ enum TokenKind {
     TOKEN_DOT,
     TOKEN_DOUBLE_DOT,
     TOKEN_COMMA,
-    TOKEN_EQUAL,
+    TOKEN_EQUAL_SIGN,
     TOKEN_COLON,
     TOKEN_SEMICOLON,
     TOKEN_PLUS,
@@ -25,6 +25,8 @@ enum TokenKind {
     TOKEN_ASTERISK,
     TOKEN_AMPERSAND,
     TOKEN_SLASH,
+
+    TOKEN_EQUAL,
 
     TOKEN_RIGHT_ARROW,
 
@@ -55,8 +57,6 @@ struct ExpressionBuilder {
     b32 is_binary;
     List<SyntaxElement*> operand_stack;
     List<OperatorInfo>   operator_stack;
-
-    List<SyntaxElement*> expressions;
 };
 
 s32 const PARSER_MAX_PEEK = 16;
@@ -67,7 +67,7 @@ struct Parser {
     SourceLocation loc;
 
     ExpressionBuilder builder;
-    SyntaxScope *current_scope;
+    List<SyntaxElement*> list_builder;
 
     Environment *env;
 
@@ -86,6 +86,7 @@ Parser init_parser(String filename, String source);
 
 
 bool parse_as_knot_code(Parser *parser, Environment *env);
+Environment parse_knot_file(String filename);
 
 void print_syntax_tree(SyntaxNode *node);
 

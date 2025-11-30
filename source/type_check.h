@@ -1,7 +1,7 @@
 #pragma once
 
-#include "parser.h"
 
+struct Environment;
 
 bool type_check(Environment *env);
 

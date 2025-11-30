@@ -1,7 +1,24 @@
 v0, v1 :: 4, 5
 v2, v3 :: 1, 42 - 1
 
+Factor :: 2
 var :: 3 + 4 * Factor / v0
 
-Factor :: 2
+User :: struct {
+    name: string;
+}
+
+forty_two :: (): s32 {
+    return 42;
+}
+
+List :: struct {
+    data:  u8&;
+    size:  s64;
+    alloc: s64;
+}
+
+grow :: (list: List&) {
+    new_alloc := list.alloc * Factor;
+}
 
