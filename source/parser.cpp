@@ -205,7 +205,7 @@ INTERNAL Token parse_control(Parser *parser) {
     u8 c;
     get_char(parser, &c);
 
-    token.content = String(parser->source_code.data - 1, 1);
+    token.content = sub_string(parser->source_code, parser->loc.pos - 1, 1);
 
     switch (c) {
     case '.': {
@@ -409,6 +409,7 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 struct OperatorInfo {
     SyntaxOperator op;
     SourceLocation loc;
+    String text;
 };
 
 INTERNAL void add_operator(Parser *parser, Token *token) {
@@ -428,7 +429,8 @@ INTERNAL void add_operator(Parser *parser, Token *token) {
         die("Token is not an operator.");
     }
 
-    info.loc = token->loc;
+    info.loc  = token->loc;
+    info.text = token->content;
 
     append(&parser->builder.operator_stack, info);
 }
@@ -452,6 +454,7 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
             SyntaxBinaryOperator *bin = ALLOC(DefaultAllocator, SyntaxBinaryOperator, 1);
             bin->kind = SYNTAX_BINARY_OPERATOR;
             bin->loc  = last.loc;
+            bin->text = last.text;
             bin->operator_kind = last.op;
 
             auto *operands = &parser->builder.operand_stack;

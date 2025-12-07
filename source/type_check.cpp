@@ -82,6 +82,25 @@ INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     return true;
 }
 
+INTERNAL b32 declare_lambda(SyntaxScope *scope, String name, Type *type) {
+    assert(name != "");
+
+    Identifier *ident = upsert(&scope->identifier_table, name);
+
+    // TODO: Overloaded lambda symbols.
+    if (ident->kind == IDENTIFIER_UNDEFINED) {
+        ident->name = name;
+        ident->kind = IDENTIFIER_LAMBDA;
+        append(&ident->lambda_set, type);
+    } else if (ident->kind == IDENTIFIER_LAMBDA) {
+        append(&ident->lambda_set, type);
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
 
 INTERNAL Type BuiltinTypeS8;
 INTERNAL Type BuiltinTypeS16;
@@ -97,12 +116,20 @@ INTERNAL Type BuiltinTypeBool;
 
 INTERNAL Type BuiltinTypeString;
 
+INTERNAL Type BuiltinAdd;
+INTERNAL BuiltinLambdaInfo BuiltinAddInfo;
+
+INTERNAL Type BuiltinSub;
+INTERNAL Type BuiltinMul;
+INTERNAL Type BuiltinDiv;
+
 
 INTERNAL Type make_builtin_integer_type(String name, IntegerType int_type) {
     Type type = {};
     type.name = name;
     type.kind = TYPE_INTEGER;
     type.as.integer = int_type;
+    type.flags |= TYPE_FLAG_BUILTIN;
 
     return type;
 }
@@ -111,6 +138,7 @@ INTERNAL Type make_builtin_bool_type(String name) {
     Type type = {};
     type.name = name;
     type.kind = TYPE_BOOL;
+    type.flags |= TYPE_FLAG_BUILTIN;
 
     return type;
 }
@@ -119,9 +147,20 @@ INTERNAL Type make_builtin_string_type(String name) {
     Type type = {};
     type.name = name;
     type.kind = TYPE_STRING;
+    type.flags |= TYPE_FLAG_BUILTIN;
 
     return type;
 }
+
+INTERNAL Type make_builtin_lambda(String name, BuiltinLambdaInfo *info) {
+    Type type = {};
+    type.name = name;
+    type.kind = TYPE_LAMBDA;
+    type.flags |= TYPE_FLAG_BUILTIN;
+    type.as.lambda.builtin_info = info;
+
+    return type;
+};
 
 INTERNAL void declare_builtins(SyntaxScope *scope) {
     BuiltinTypeU8  = make_builtin_integer_type("u8",  {false});
@@ -133,6 +172,16 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
 
     BuiltinTypeString = make_builtin_string_type("string");
 
+    BuiltinAddInfo.params    = array_allocate<Type>(2);
+    BuiltinAddInfo.params[0] = BuiltinTypeS32;
+    BuiltinAddInfo.params[1] = BuiltinTypeS32;
+    BuiltinAddInfo.returns    = array_allocate<Type>(1);
+    BuiltinAddInfo.returns[0] = BuiltinTypeS32;
+    BuiltinAdd = make_builtin_lambda("+", &BuiltinAddInfo);
+    BuiltinSub = make_builtin_lambda("-", &BuiltinAddInfo);
+    BuiltinMul = make_builtin_lambda("*", &BuiltinAddInfo);
+    BuiltinDiv = make_builtin_lambda("/", &BuiltinAddInfo);
+
     declare_type(scope, &BuiltinTypeU8);
     declare_type(scope, &BuiltinTypeS32);
     declare_type(scope, &BuiltinTypeS64);
@@ -140,6 +189,11 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
     declare_type(scope, &BuiltinTypeBool);
 
     declare_type(scope, &BuiltinTypeString);
+
+    declare_lambda(scope, "+", &BuiltinAdd);
+    declare_lambda(scope, "-", &BuiltinSub);
+    declare_lambda(scope, "*", &BuiltinMul);
+    declare_lambda(scope, "/", &BuiltinDiv);
 };
 
 
@@ -194,7 +248,7 @@ INTERNAL TypingResult infer_integer_literal(Environment *env, SyntaxIntegerLiter
         literal->type = BuiltinTypeU64;
     }
 
-    literal->type.flags |= SYNTAX_FLAG_CONSTANT;
+    literal->type.flags |= TYPE_FLAG_CONSTANT;
 
     return TYPING_CORRECT;
 }
@@ -217,10 +271,19 @@ INTERNAL TypingResult infer_binary_operator(Environment *env, SyntaxBinaryOperat
     } else {
     }
     */
+    
+    Identifier *ident = resolve_identifier(env->current_scope, op->text);
+    if (ident->kind == IDENTIFIER_UNDEFINED) {
+        report_error(env, op->loc, t_format("Operator %S is not implemented.", op->text));
+        return TYPING_ERROR;
+    }
+
+
+
     op->type = op->lhs->type;
-    if (op->lhs->type.flags & SYNTAX_FLAG_CONSTANT &&
-        op->rhs->type.flags & SYNTAX_FLAG_CONSTANT) {
-        op->type.flags |= SYNTAX_FLAG_CONSTANT;
+    if (op->lhs->type.flags & TYPE_FLAG_CONSTANT &&
+        op->rhs->type.flags & TYPE_FLAG_CONSTANT) {
+        op->type.flags |= TYPE_FLAG_CONSTANT;
     }
 
     return TYPING_CORRECT;
@@ -291,7 +354,7 @@ INTERNAL b32 bind_symbols(Environment *env, Array<SyntaxIdentifier*> symbols, Sy
                 return false;
             }
         } else if (elem->kind == SYNTAX_BINARY_OPERATOR) {
-            if (elem->type.flags & SYNTAX_FLAG_CONSTANT) {
+            if (elem->type.flags & TYPE_FLAG_CONSTANT) {
                 // TODO: Constant folding.
                 if (!declare_symbol(env->current_scope, symbols[0]->name, elem)) {
                     report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));

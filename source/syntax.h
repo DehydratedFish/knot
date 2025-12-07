@@ -7,6 +7,8 @@
 
 struct SyntaxElement;
 struct SyntaxStruct;
+struct SyntaxLambda;
+struct Type;
 
 
 struct IntegerType {
@@ -17,6 +19,18 @@ struct StructType {
     SyntaxStruct *decl;
 };
 
+
+struct BuiltinLambdaInfo {
+    Array<Type> params;
+    Array<Type> returns;
+};
+
+struct LambdaType {
+    // TODO: Unionize.
+    SyntaxLambda *decl;
+    BuiltinLambdaInfo *builtin_info;
+};
+
 enum TypeKind {
     TYPE_UNDEFINED,
     TYPE_SPECIFIER,
@@ -25,6 +39,12 @@ enum TypeKind {
     TYPE_BOOL,
     TYPE_STRING,
     TYPE_STRUCT,
+    TYPE_LAMBDA,
+};
+
+enum TypeFlags {
+    TYPE_FLAG_BUILTIN  = 1 << 0,
+    TYPE_FLAG_CONSTANT = 1 << 1,
 };
 
 struct Type {
@@ -38,6 +58,7 @@ struct Type {
     union {
         IntegerType integer;
         StructType  structure;
+        LambdaType  lambda;
     } as;
 };
 
@@ -47,6 +68,7 @@ enum IdentifierKind {
 
     IDENTIFIER_SYMBOL,
     IDENTIFIER_TYPE,
+    IDENTIFIER_LAMBDA,
 };
 
 struct Identifier {
@@ -56,6 +78,7 @@ struct Identifier {
     // TODO: Make a union?
     Type *type;
     SyntaxElement *element;
+    List<Type*> lambda_set;
 };
 
 
@@ -160,9 +183,6 @@ struct SyntaxNode {
 };
 
 
-enum SyntaxFlags {
-    SYNTAX_FLAG_CONSTANT = 1 << 0,
-};
 struct SyntaxElement {
     SyntaxKind kind;
     SourceLocation loc;
@@ -202,6 +222,7 @@ struct SyntaxReference : SyntaxElement {
 
 struct SyntaxBinaryOperator : SyntaxElement {
     SyntaxOperator operator_kind;
+    String text;
 
     SyntaxElement *lhs;
     SyntaxElement *rhs;
