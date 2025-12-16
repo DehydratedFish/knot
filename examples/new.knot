@@ -8,8 +8,12 @@ User :: struct {
     name: string;
 }
 
-forty_two :: (): s32 {
+overload :: (): s32 {
     return 42;
+}
+
+overload :: (num: s32): s32 {
+    return num;
 }
 
 List :: struct {

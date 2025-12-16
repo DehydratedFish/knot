@@ -4,7 +4,6 @@
 #include "hash_table.h"
 
 
-
 struct SyntaxElement;
 struct SyntaxStruct;
 struct SyntaxLambda;
@@ -66,7 +65,8 @@ struct Type {
 enum IdentifierKind {
     IDENTIFIER_UNDEFINED,
 
-    IDENTIFIER_SYMBOL,
+    IDENTIFIER_COMPILE_TIME_VALUE,
+    IDENTIFIER_VARIABLE,
     IDENTIFIER_TYPE,
     IDENTIFIER_LAMBDA,
 };
@@ -110,6 +110,8 @@ inline String enum_string(SyntaxOperator op) {
     assert(op < OP_COUNT);
 
     String lookup[OP_COUNT] = {
+        "==",
+        ".",
         "&",
         "*",
         "/",

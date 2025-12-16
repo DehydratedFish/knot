@@ -41,6 +41,30 @@ enum {
 
 INTERNAL u32 CurrentID = TYPE_ID_BUILTIN_COUNT;
 
+INTERNAL b32 is_same_type(Type *fst, Type *snd) {
+    if (fst->name == snd->name &&
+        fst->kind == snd->kind &&
+        fst->pointer_depth == snd->pointer_depth) {
+        return true;
+    }
+
+    return false;
+}
+
+
+INTERNAL b32 declare(SyntaxScope *scope, IdentifierKind kind, String name, SyntaxElement *elem) {
+    assert(name != "");
+
+    Identifier *ident = upsert(&scope->identifier_table, name);
+    if (ident->kind != IDENTIFIER_UNDEFINED) return false;
+
+    ident->name = name;
+    ident->kind = kind;
+    ident->type = &elem->type;
+    ident->element = elem;
+
+    return true;
+}
 
 INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
     assert(type->name != "");
@@ -55,20 +79,6 @@ INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
     return true;
 }
 
-INTERNAL b32 declare_symbol(SyntaxScope *scope, String name, SyntaxElement *elem) {
-    assert(name != "");
-
-    Identifier *ident = upsert(&scope->identifier_table, name);
-    if (ident->kind != IDENTIFIER_UNDEFINED) return false;
-
-    ident->name = name;
-    ident->kind = IDENTIFIER_SYMBOL;
-    ident->type = &elem->type;
-    ident->element = elem;
-
-    return true;
-}
-
 INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     assert(name != "");
 
@@ -76,10 +86,63 @@ INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = name;
-    ident->kind = IDENTIFIER_SYMBOL;
+    ident->kind = IDENTIFIER_VARIABLE;
     ident->type = type;
 
     return true;
+}
+
+INTERNAL void collect_overloads(SyntaxScope *scope, String name, List<Type*> *list) {
+    SyntaxScope *next = scope->parent;
+    while (next) {
+        Identifier *ident = upsert(&scope->identifier_table, name);
+        if (ident->kind == IDENTIFIER_LAMBDA) {
+            append(list, (Array<Type*>)ident->lambda_set);
+        }
+
+        next = next->parent;
+    }
+}
+
+INTERNAL b32 is_same_overload(Type *fst, Type *snd) {
+    assert(fst->kind == TYPE_LAMBDA && snd->kind == TYPE_LAMBDA);
+    if ((fst->flags & TYPE_FLAG_BUILTIN) != (snd->flags & TYPE_FLAG_BUILTIN)) return false;
+
+    if (fst->flags & TYPE_FLAG_BUILTIN) {
+        auto *fst_params = &fst->as.lambda.builtin_info->params;
+        auto *snd_params = &snd->as.lambda.builtin_info->params;
+
+        if (fst_params->size != snd_params->size) return false;
+        if (fst_params->size == 0) return true;
+
+        for (s64 i = 0; i < fst_params->size; i += 1) {
+            if (!is_same_type(&(*fst_params)[i], &(*snd_params)[i])) return false;
+        }
+    } else {
+        auto *fst_params = &fst->as.lambda.decl->params;
+        auto *snd_params = &snd->as.lambda.decl->params;
+
+        if (fst_params->size != snd_params->size) return false;
+        if (fst_params->size == 0) return true;
+
+        for (s64 i = 0; i < fst_params->size; i += 1) {
+            if (!is_same_type(&(*fst_params)[i].type, &(*snd_params)[i].type)) return false;
+        }
+    }
+
+    return true;
+}
+
+INTERNAL b32 overload_found(Identifier *ident, Type *type) {
+    assert(type->kind == TYPE_LAMBDA);
+
+    for (s64 i = 0; i < ident->lambda_set.size; i += 1) {
+        Type *lambda = ident->lambda_set[i];
+
+        if (is_same_overload(lambda, type)) return true;
+    }
+
+    return false;
 }
 
 INTERNAL b32 declare_lambda(SyntaxScope *scope, String name, Type *type) {
@@ -87,14 +150,20 @@ INTERNAL b32 declare_lambda(SyntaxScope *scope, String name, Type *type) {
 
     Identifier *ident = upsert(&scope->identifier_table, name);
 
-    // TODO: Overloaded lambda symbols.
-    if (ident->kind == IDENTIFIER_UNDEFINED) {
+    switch (ident->kind) {
+    case IDENTIFIER_UNDEFINED:
         ident->name = name;
         ident->kind = IDENTIFIER_LAMBDA;
+
+        collect_overloads(scope, name, &ident->lambda_set);
+
+    case IDENTIFIER_LAMBDA:
+        // TODO: Check if overload is already defined.
+        if (overload_found(ident, type)) return false;
         append(&ident->lambda_set, type);
-    } else if (ident->kind == IDENTIFIER_LAMBDA) {
-        append(&ident->lambda_set, type);
-    } else {
+    break;
+
+    default:
         return false;
     }
 
@@ -310,7 +379,7 @@ INTERNAL TypingResult infer_dot_operator(Environment *env, SyntaxDotOperator *do
         return TYPING_ERROR;
     }
 
-    if (ident->kind == IDENTIFIER_SYMBOL && ident->type->kind == TYPE_STRUCT) {
+    if (ident->kind == IDENTIFIER_VARIABLE && ident->type->kind == TYPE_STRUCT) {
         SyntaxStructMember *member = find_member(ident->type, dot->rhs->name);
         if (!member) {
             report_error(env, dot->rhs->loc, t_format("Struct %S has no member %S.", dot->lhs->name, dot->rhs->name));
@@ -349,14 +418,14 @@ INTERNAL b32 bind_symbols(Environment *env, Array<SyntaxIdentifier*> symbols, Sy
                 return false;
             }
         } else if (elem->kind == SYNTAX_INTEGER_LITERAL) {
-            if (!declare_symbol(env->current_scope, symbols[0]->name, elem)) {
+            if (!declare(env->current_scope, IDENTIFIER_COMPILE_TIME_VALUE, symbols[0]->name, elem)) {
                 report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                 return false;
             }
         } else if (elem->kind == SYNTAX_BINARY_OPERATOR) {
             if (elem->type.flags & TYPE_FLAG_CONSTANT) {
                 // TODO: Constant folding.
-                if (!declare_symbol(env->current_scope, symbols[0]->name, elem)) {
+                if (!declare(env->current_scope, IDENTIFIER_COMPILE_TIME_VALUE, symbols[0]->name, elem)) {
                     report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                     return false;
                 }
@@ -364,7 +433,8 @@ INTERNAL b32 bind_symbols(Environment *env, Array<SyntaxIdentifier*> symbols, Sy
                 report_error(env, symbols[0]->loc, t_format("Can't bind symbol to non constant expression.", symbols[0]->name));
             }
         } else if (elem->kind == SYNTAX_LAMBDA_DECL) {
-            if (!declare_symbol(env->current_scope, symbols[0]->name, elem)) {
+            if (!declare_lambda(env->current_scope, symbols[0]->name, &elem->type)) {
+                // TODO: Detailed error if overload is redeclared.
                 report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                 return false;
             }
@@ -403,7 +473,7 @@ INTERNAL TypingResult infer_symbol_declaration(Environment *env, SyntaxSymbolDec
         s32 needed_symbols = get_binding_count(elem);
         Array<SyntaxIdentifier*> symbols = slice(decl->symbols, symbol_index, needed_symbols);
 
-        bind_symbols(env, symbols, elem);
+        if (!bind_symbols(env, symbols, elem)) return TYPING_ERROR;
 
         symbol_index += needed_symbols;
     }
@@ -499,6 +569,9 @@ INTERNAL TypingResult infer_lambda(Environment *env, SyntaxLambda *lambda) {
 
     DEFER(env->current_lambda = old);
 
+    lambda->type.kind = TYPE_LAMBDA;
+    lambda->type.as.lambda.decl = lambda;
+
     FOR (lambda->params, param) {
         if (!fill_type_info(env, param)) {
             return TYPING_ERROR;
@@ -525,7 +598,7 @@ INTERNAL TypingResult infer_return(Environment *env, SyntaxReturn *ret) {
     }
 
     if (ret->returns.size != lambda->returns.size) {
-        report_error(env, ret->loc, format("Lambda expects %D return values (%D supplied).", lambda->returns.size, ret->returns.size));
+        report_error(env, ret->loc, format("Lambda has %D return values (%D supplied).", lambda->returns.size, ret->returns.size));
 
         return TYPING_ERROR;
     }
@@ -603,12 +676,31 @@ INTERNAL TypingResult check_binary_operator(Environment *env, SyntaxBinaryOperat
     return TYPING_ERROR;
 }
 
+INTERNAL TypingResult check_identifier(Environment *env, SyntaxIdentifier *ident, Type *expected) {
+    Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
+    if (identifier->kind == IDENTIFIER_UNDEFINED) {
+        // TODO: Add to undeclared identifiers.
+        report_error(env, ident->loc, "Undeclared identifier.");
+        return TYPING_ERROR;
+    }
+
+    if (identifier->kind != IDENTIFIER_VARIABLE) {
+        report_error(env, ident->loc, t_format("Identifier %S is not a variable.", ident->name));
+        return TYPING_ERROR;
+    }
+
+    ident->type = *identifier->type;
+
+    return TYPING_CORRECT;
+}
+
 INTERNAL TypingResult check(Environment *env, SyntaxElement *elem, Type *expected) {
     TypingResult result = TYPING_ERROR;
 
     switch (elem->kind) {
     case SYNTAX_INTEGER_LITERAL: result = check_integer_literal(env, (SyntaxIntegerLiteral*)elem, expected); break;
     case SYNTAX_BINARY_OPERATOR: result = check_binary_operator(env, (SyntaxBinaryOperator*)elem, expected); break;
+    case SYNTAX_IDENTIFIER:      result = check_identifier(env, (SyntaxIdentifier*)elem, expected); break;
 
     default:
         report_diagnostic(env, DIAGNOSTIC_ERROR, elem->loc, t_format("[DEBUG] Can't check SyntaxElement with type %S.", enum_string(elem->kind)));

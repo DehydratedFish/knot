@@ -1,5 +1,4 @@
 #include "parser.h"
-
 #include "definitions.h"
 #include "io.h"
 #include "knot.h"
