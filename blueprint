@@ -7,8 +7,17 @@ executable: knot {
     symbols: "DEVELOPER", "BOUNDS_CHECKING";
     include: "source";
 
-    sources: /"source", "knot.cpp", "parser.cpp", "type_check.cpp";
+    sources: /"source", "knot.cpp", "parser.cpp", "type_check.cpp", "codegen.cpp";
 
-    dependencies: debug, mountain.core;
+    dependencies: debug, mountain.core, llvm_develop;
+}
+
+// This is just working for my system. Bricks needs an update for this to work independently.
+brick: llvm_develop {
+    include: "D:\lib\llvm\include";
+
+    options(@msvc): "/std:c++17";
+
+    dependencies(@msvc): "ntdll.lib", "lib/llvm_monstrocity.lib";
 }
 

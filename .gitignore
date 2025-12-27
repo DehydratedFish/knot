@@ -3,5 +3,8 @@
 build
 knot
 
+# REMOVE: This is just a quick and dirty llvm lib inlude so I can get working.
+lib
+
 compile_flags.txt
 

@@ -92,6 +92,8 @@ INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     return true;
 }
 
+// TODO: I think overloads have to be added to the front. Else they get resolved
+//       the wrong way?
 INTERNAL void collect_overloads(SyntaxScope *scope, String name, List<Type*> *list) {
     SyntaxScope *next = scope->parent;
     while (next) {
@@ -187,10 +189,12 @@ INTERNAL Type BuiltinTypeString;
 
 INTERNAL Type BuiltinAdd;
 INTERNAL BuiltinLambdaInfo BuiltinAddInfo;
-
 INTERNAL Type BuiltinSub;
+INTERNAL BuiltinLambdaInfo BuiltinSubInfo;
 INTERNAL Type BuiltinMul;
+INTERNAL BuiltinLambdaInfo BuiltinMulInfo;
 INTERNAL Type BuiltinDiv;
+INTERNAL BuiltinLambdaInfo BuiltinDivInfo;
 
 
 INTERNAL Type make_builtin_integer_type(String name, IntegerType int_type) {
@@ -231,6 +235,15 @@ INTERNAL Type make_builtin_lambda(String name, BuiltinLambdaInfo *info) {
     return type;
 };
 
+INTERNAL void fill_builtin_operator(BuiltinLambdaInfo *info, Type *type) {
+    // TODO: These should be static allocations.
+    info->params    = array_allocate<Type>(2);
+    info->params[0] = *type;
+    info->params[1] = *type;
+    info->returns    = array_allocate<Type>(1);
+    info->returns[0] = *type;
+}
+
 INTERNAL void declare_builtins(SyntaxScope *scope) {
     BuiltinTypeU8  = make_builtin_integer_type("u8",  {false});
 
@@ -241,15 +254,16 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
 
     BuiltinTypeString = make_builtin_string_type("string");
 
-    BuiltinAddInfo.params    = array_allocate<Type>(2);
-    BuiltinAddInfo.params[0] = BuiltinTypeS32;
-    BuiltinAddInfo.params[1] = BuiltinTypeS32;
-    BuiltinAddInfo.returns    = array_allocate<Type>(1);
-    BuiltinAddInfo.returns[0] = BuiltinTypeS32;
+    fill_builtin_operator(&BuiltinAddInfo, &BuiltinTypeS32);
+    fill_builtin_operator(&BuiltinSubInfo, &BuiltinTypeS32);
+    fill_builtin_operator(&BuiltinMulInfo, &BuiltinTypeS32);
+    fill_builtin_operator(&BuiltinDivInfo, &BuiltinTypeS32);
+
     BuiltinAdd = make_builtin_lambda("+", &BuiltinAddInfo);
-    BuiltinSub = make_builtin_lambda("-", &BuiltinAddInfo);
-    BuiltinMul = make_builtin_lambda("*", &BuiltinAddInfo);
-    BuiltinDiv = make_builtin_lambda("/", &BuiltinAddInfo);
+    BuiltinSub = make_builtin_lambda("-", &BuiltinSubInfo);
+    BuiltinMul = make_builtin_lambda("*", &BuiltinMulInfo);
+    BuiltinDiv = make_builtin_lambda("/", &BuiltinDivInfo);
+
 
     declare_type(scope, &BuiltinTypeU8);
     declare_type(scope, &BuiltinTypeS32);
@@ -263,7 +277,7 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
     declare_lambda(scope, "-", &BuiltinSub);
     declare_lambda(scope, "*", &BuiltinMul);
     declare_lambda(scope, "/", &BuiltinDiv);
-};
+}
 
 
 INTERNAL Identifier *resolve_identifier(SyntaxScope *scope, String name) {

@@ -10,6 +10,7 @@
 #include "arena.h"
 
 #include "type_check.h"
+#include "codegen.h"
 
 
 INTERNAL void developer_print(String msg) {
@@ -179,7 +180,12 @@ s32 application_main(Array<String> args) {
 
        return -1;
        }
-       */
+    */
+
+
+    developer_print("\nDEBUG: Codegen.\n");
+    platform_flush_write_buffer(Console.out);
+    codegen_llvm(&env);
 
     print("\nCompilation finished.\n");
 
