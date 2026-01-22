@@ -52,13 +52,6 @@ struct Token {
 };
 
 
-struct ExpressionBuilder {
-    // NOTE: Either unary or binary operator expected next.
-    b32 is_binary;
-    List<SyntaxElement*> operand_stack;
-    List<OperatorInfo>   operator_stack;
-};
-
 s32 const PARSER_MAX_PEEK = 16;
 struct Parser {
     String source_code;
@@ -66,8 +59,7 @@ struct Parser {
 
     SourceLocation loc;
 
-    ExpressionBuilder builder;
-    List<SyntaxElement*> list_builder;
+    List<SyntaxElement*> expr_list;
 
     Environment *env;
 

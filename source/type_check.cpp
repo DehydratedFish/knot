@@ -55,7 +55,7 @@ INTERNAL b32 is_same_type(Type *fst, Type *snd) {
 INTERNAL b32 declare(SyntaxScope *scope, IdentifierKind kind, String name, SyntaxElement *elem) {
     assert(name != "");
 
-    Identifier *ident = upsert(&scope->identifier_table, name);
+    Identifier *ident = *upsert(&scope->identifier_table, name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = name;
@@ -69,7 +69,7 @@ INTERNAL b32 declare(SyntaxScope *scope, IdentifierKind kind, String name, Synta
 INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
     assert(type->name != "");
 
-    Identifier *ident = upsert(&scope->identifier_table, type->name);
+    Identifier *ident = *upsert(&scope->identifier_table, type->name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = type->name;
@@ -82,7 +82,7 @@ INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
 INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     assert(name != "");
 
-    Identifier *ident = upsert(&scope->identifier_table, name);
+    Identifier *ident = *upsert(&scope->identifier_table, name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = name;
@@ -97,7 +97,7 @@ INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
 INTERNAL void collect_overloads(SyntaxScope *scope, String name, List<Type*> *list) {
     SyntaxScope *next = scope->parent;
     while (next) {
-        Identifier *ident = upsert(&scope->identifier_table, name);
+        Identifier *ident = *upsert(&scope->identifier_table, name);
         if (ident->kind == IDENTIFIER_LAMBDA) {
             append(list, (Array<Type*>)ident->lambda_set);
         }
@@ -150,7 +150,7 @@ INTERNAL b32 overload_found(Identifier *ident, Type *type) {
 INTERNAL b32 declare_lambda(SyntaxScope *scope, String name, Type *type) {
     assert(name != "");
 
-    Identifier *ident = upsert(&scope->identifier_table, name);
+    Identifier *ident = *upsert(&scope->identifier_table, name);
 
     switch (ident->kind) {
     case IDENTIFIER_UNDEFINED:
@@ -182,6 +182,8 @@ INTERNAL Type BuiltinTypeU8;
 INTERNAL Type BuiltinTypeU16;
 INTERNAL Type BuiltinTypeU32;
 INTERNAL Type BuiltinTypeU64;
+
+INTERNAL Type BuiltinTypeInt;
 
 INTERNAL Type BuiltinTypeBool;
 
@@ -250,6 +252,9 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
     BuiltinTypeS32 = make_builtin_integer_type("s32", {true});
     BuiltinTypeS64 = make_builtin_integer_type("s64", {true});
 
+    // TODO: Type int will be platform specific.
+    BuiltinTypeInt = make_builtin_integer_type("int", {true});
+
     BuiltinTypeBool = make_builtin_bool_type("bool");
 
     BuiltinTypeString = make_builtin_string_type("string");
@@ -269,6 +274,8 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
     declare_type(scope, &BuiltinTypeS32);
     declare_type(scope, &BuiltinTypeS64);
 
+    declare_type(scope, &BuiltinTypeInt);
+
     declare_type(scope, &BuiltinTypeBool);
 
     declare_type(scope, &BuiltinTypeString);
@@ -285,10 +292,10 @@ INTERNAL Identifier *resolve_identifier(SyntaxScope *scope, String name) {
 
     // NOTE: Upserting because the Identifier will default to IDENTIFIER_UNDEFINED so a check for
     //       null is not necessary.
-    Identifier *identifier = upsert(&search->identifier_table, name);
+    Identifier *identifier = *upsert(&search->identifier_table, name);
     while (identifier->kind == IDENTIFIER_UNDEFINED && search->parent) {
         search = search->parent;
-        identifier = upsert(&search->identifier_table, name);
+        identifier = *upsert(&search->identifier_table, name);
     }
 
     return identifier;
@@ -296,13 +303,28 @@ INTERNAL Identifier *resolve_identifier(SyntaxScope *scope, String name) {
 
 INTERNAL TypingResult infer_identifier(Environment *env, SyntaxIdentifier *ident) {
     Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
-    if (identifier->kind == IDENTIFIER_UNDEFINED) {
-        // TODO: Add to undeclared identifiers.
+    ident->identifier = identifier;
+
+    switch (identifier->kind) {
+    case IDENTIFIER_TYPE:
+    case IDENTIFIER_VARIABLE: {
+        ident->type = *identifier->type;
+    } break;
+
+    case IDENTIFIER_COMPILE_TIME_VALUE: {
+        ident->type = identifier->element->type;
+    } break;
+
+    case IDENTIFIER_LAMBDA: {
+        ident->type.kind = TYPE_UNRESOLVED_OVERLOAD_SET;
+        ident->type.as.overloads = identifier->lambda_set;
+    } break;
+
+    case IDENTIFIER_UNDEFINED: {
         report_error(env, ident->loc, "Undeclared identifier.");
         return TYPING_ERROR;
+    } break;
     }
-
-    ident->type = *identifier->type;
 
     return TYPING_CORRECT;
 }
@@ -360,8 +382,6 @@ INTERNAL TypingResult infer_binary_operator(Environment *env, SyntaxBinaryOperat
         report_error(env, op->loc, t_format("Operator %S is not implemented.", op->text));
         return TYPING_ERROR;
     }
-
-
 
     op->type = op->lhs->type;
     if (op->lhs->type.flags & TYPE_FLAG_CONSTANT &&
@@ -653,6 +673,7 @@ INTERNAL TypingResult infer(Environment *env, SyntaxElement *elem) {
 
 INTERNAL b32 is_literal_convertable_to_type(SyntaxIntegerLiteral *literal, Type *expected) {
     if (expected->kind != TYPE_INTEGER) return false;
+    literal->type = *expected;
     // TODO: Check if literal fits into type.
 
     return true;
@@ -685,9 +706,19 @@ INTERNAL TypingResult check_binary_operator(Environment *env, SyntaxBinaryOperat
     }
     */
 
-    report_error(env, op->loc, "Operator not implemented.");
+    Identifier *ident = resolve_identifier(env->current_scope, op->text);
+    if (ident->kind == IDENTIFIER_UNDEFINED) {
+        report_error(env, op->loc, t_format("Operator %S is not implemented.", op->text));
+        return TYPING_ERROR;
+    }
 
-    return TYPING_ERROR;
+    op->type = op->lhs->type;
+    if (op->lhs->type.flags & TYPE_FLAG_CONSTANT &&
+        op->rhs->type.flags & TYPE_FLAG_CONSTANT) {
+        op->type.flags |= TYPE_FLAG_CONSTANT;
+    }
+
+    return TYPING_CORRECT;
 }
 
 INTERNAL TypingResult check_identifier(Environment *env, SyntaxIdentifier *ident, Type *expected) {
@@ -708,13 +739,70 @@ INTERNAL TypingResult check_identifier(Environment *env, SyntaxIdentifier *ident
     return TYPING_CORRECT;
 }
 
+INTERNAL b32 lambda_fits(Environment *env, Type *type, Array<SyntaxElement*> args) {
+    assert(type->kind == TYPE_LAMBDA);
+
+    LambdaType *lambda = &type->as.lambda;
+    if (lambda->decl->params.size == args.size) {
+        for (s64 i = 0; i < lambda->decl->params.size; i += 1) {
+            TypingResult result = check(env, args[i], &lambda->decl->params[i].type);
+            if (result != TYPING_CORRECT) return false;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+INTERNAL b32 resolve_overload(Environment *env, Type *type, Array<SyntaxElement*> args, Array<SyntaxElement*> returns = {}) {
+    if (type->kind == TYPE_UNRESOLVED_OVERLOAD_SET) {
+        for (s64 i = 0; i < type->as.overloads.size; i += 1) {
+            if (lambda_fits(env, type->as.overloads[i], args)) {
+                type = type->as.overloads[i];
+                return true;
+            }
+        }
+    } else {
+        if (lambda_fits(env, &type->as.lambda.decl->type, args)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+INTERNAL TypingResult check_call(Environment *env, SyntaxCall *call, Type *expected) {
+    TypingResult result;
+
+    result = infer(env, call->caller);
+    if (result != TYPING_CORRECT) return result;
+
+    if (!resolve_overload(env, &call->caller->type, call->args)) {
+        report_error(env, call->loc, "Could not resolve lambda for call.");
+        return TYPING_ERROR;
+    }
+
+    return TYPING_CORRECT;
+}
+
+INTERNAL TypingResult check_lambda_param(Environment *env, SyntaxLambdaParameter *param, Type *expected) {
+    if (is_same_type(&param->type, expected)) {
+        return TYPING_CORRECT;
+    }
+
+    return TYPING_ERROR;
+}
+
 INTERNAL TypingResult check(Environment *env, SyntaxElement *elem, Type *expected) {
     TypingResult result = TYPING_ERROR;
 
     switch (elem->kind) {
-    case SYNTAX_INTEGER_LITERAL: result = check_integer_literal(env, (SyntaxIntegerLiteral*)elem, expected); break;
-    case SYNTAX_BINARY_OPERATOR: result = check_binary_operator(env, (SyntaxBinaryOperator*)elem, expected); break;
-    case SYNTAX_IDENTIFIER:      result = check_identifier(env, (SyntaxIdentifier*)elem, expected); break;
+    case SYNTAX_INTEGER_LITERAL:  result = check_integer_literal(env, (SyntaxIntegerLiteral*)elem, expected); break;
+    case SYNTAX_BINARY_OPERATOR:  result = check_binary_operator(env, (SyntaxBinaryOperator*)elem, expected); break;
+    case SYNTAX_IDENTIFIER:       result = check_identifier(env, (SyntaxIdentifier*)elem, expected); break;
+    case SYNTAX_CALL:             result = check_call(env, (SyntaxCall*)elem, expected); break;
+    case SYNTAX_LAMBDA_PARAMETER: result = check_lambda_param(env, (SyntaxLambdaParameter*)elem, expected); break;
 
     default:
         report_diagnostic(env, DIAGNOSTIC_ERROR, elem->loc, t_format("[DEBUG] Can't check SyntaxElement with type %S.", enum_string(elem->kind)));

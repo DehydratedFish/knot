@@ -355,7 +355,7 @@ INTERNAL Token peek_token(Parser *parser, s32 tokens) {
     return parser->peek[parser->peek_count - tokens];
 }
 
-INTERNAL void advance_token(Parser *parser) {
+INTERNAL TokenKind advance_token(Parser *parser) {
     parser->previous_token = parser->current_token;
 
     if (parser->peek_count) {
@@ -364,6 +364,8 @@ INTERNAL void advance_token(Parser *parser) {
     } else {
         parser->current_token = next_token(parser);
     }
+
+    return parser->previous_token.kind;
 }
 
 Parser init_parser(String filename, String source) {
@@ -405,39 +407,7 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 }
 
 
-struct OperatorInfo {
-    SyntaxOperator op;
-    SourceLocation loc;
-    String text;
-};
-
-INTERNAL void add_operator(Parser *parser, Token *token) {
-    OperatorInfo info;
-
-    switch (token->kind) {
-    case TOKEN_AMPERSAND: info.op = OP_REFERENCE; break;
-    case TOKEN_DOT:       info.op = OP_DOT;       break;
-    case TOKEN_PLUS:      info.op = OP_PLUS;      break;
-    case TOKEN_MINUS:     info.op = OP_MINUS;     break;
-    case TOKEN_ASTERISK:  info.op = OP_MULTIPLY;  break;
-    case TOKEN_SLASH:     info.op = OP_DIVIDE;    break;
-
-    case TOKEN_EQUAL:     info.op = OP_EQUAL;     break;
-
-    default:
-        die("Token is not an operator.");
-    }
-
-    info.loc  = token->loc;
-    info.text = token->content;
-
-    append(&parser->builder.operator_stack, info);
-}
-
-INTERNAL void add_operand(Parser *parser, SyntaxElement *elem) {
-    append(&parser->builder.operand_stack, elem);
-}
-
+/*
 INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
     auto *stack = &parser->builder.operator_stack;
     while (stack->size) {
@@ -509,6 +479,24 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
             add_operand(parser, ref);
         } break;
 
+        case OP_CALL: {
+            SyntaxCall *call = ALLOC(DefaultAllocator, SyntaxCall, 1);
+            call->kind = SYNTAX_CALL;
+            call->loc  = last.loc;
+
+            // NOTE: Parsing function args.
+            assert(parser->current_token.kind == TOKEN_LEFT_PARENTHESIS);
+            List<SyntaxElement*> arg_list = {};
+            do {
+                if (current_token_is(parser, TOKEN_RIGHT_PARENTHESIS)) {
+                    call->args = create_array(arg_list);
+                    break;
+                }
+
+                append(arg_list, parse_expression(parser));
+            } while (match(parser, TOKEN_COMMA));
+        } break;
+
         default:
             die("Unhandled reduce for operator.\n");
         }
@@ -516,118 +504,135 @@ INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
         stack->size -= 1;
     }
 }
+*/
 
-INTERNAL b32 parse_unary_expression(Parser *parser) {
-    switch (parser->current_token.kind) {
+INTERNAL SyntaxOperator precedence_of(TokenKind kind) {
+    switch (kind) {
+    case TOKEN_PLUS:      return OP_ADD; break;
+    case TOKEN_MINUS:     return OP_SUB; break;
+    case TOKEN_ASTERISK:  return OP_MUL; break;
+    case TOKEN_SLASH:     return OP_DIV; break;
+
+    case TOKEN_AMPERSAND: return OP_REFERENCE; break;
+    case TOKEN_LEFT_PARENTHESIS: return OP_CALL; break;
+
+    default:
+        // NOTE: Not an operator.
+        return OP_COUNT;
+    }
+}
+
+INTERNAL SyntaxElement *parse_expression(Parser *parser, SyntaxOperator prec = OP_COUNT);
+
+INTERNAL SyntaxElement *parse_unary_expression(Parser *parser) {
+    switch (advance_token(parser)) {
     case TOKEN_AMPERSAND: {
-        add_operator(parser, &parser->current_token);
-        advance_token(parser);
+        SyntaxReference *ref = ALLOC(DefaultAllocator, SyntaxReference, 1);
+        ref->kind = SYNTAX_REFERENCE;
+        ref->loc  = parser->previous_token.loc;
+
+        ref->thing = parse_expression(parser, OP_REFERENCE);
+
+        return ref;
     } break;
 
     case TOKEN_INTEGER: {
         SyntaxIntegerLiteral *literal = ALLOC(DefaultAllocator, SyntaxIntegerLiteral, 1);
         literal->kind = SYNTAX_INTEGER_LITERAL;
-        literal->loc  = parser->current_token.loc;
+        literal->loc  = parser->previous_token.loc;
 
-        literal->value = parser->current_token.content;
-        add_operand(parser, literal);
+        literal->value = parser->previous_token.content;
 
-        parser->builder.is_binary = true;
-
-        advance_token(parser);
+        return literal;
     } break;
 
     case TOKEN_IDENTIFIER: {
         SyntaxIdentifier *ident = ALLOC(DefaultAllocator, SyntaxIdentifier, 1);
         ident->kind = SYNTAX_IDENTIFIER;
-        ident->loc  = parser->current_token.loc;
+        ident->loc  = parser->previous_token.loc;
 
-        ident->name = parser->current_token.content;
-        add_operand(parser, ident);
+        ident->name = parser->previous_token.content;
 
-        parser->builder.is_binary = true;
-
-        advance_token(parser);
+        return ident;
     } break;
 
     default:
-        return false;
+        report_error(parser->env, parser->previous_token.loc, t_format("%S is not an unary expression.", parser->previous_token.content));
     }
 
-    return true;
+    return 0;
 }
 
-INTERNAL b32 parse_binary_expression(Parser *parser) {
-    parser->builder.is_binary = false;
-
-    switch (parser->current_token.kind) {
+INTERNAL SyntaxElement *parse_binary_expression(Parser *parser, SyntaxElement *lhs) {
+    switch (advance_token(parser)) {
     case TOKEN_PLUS: {
-        reduce(parser, OP_PLUS);
-        add_operator(parser, &parser->current_token);
+        SyntaxBinaryOperator *op = ALLOC(DefaultAllocator, SyntaxBinaryOperator, 1);
+        op->kind = SYNTAX_BINARY_OPERATOR;
+        op->loc  = parser->previous_token.loc;
+
+        op->operator_kind = OP_ADD;
+        op->text = "+";
+
+        op->lhs = lhs;
+        op->rhs = parse_expression(parser, precedence_of(parser->previous_token.kind));
+
+        return op;
     } break;
 
-    case TOKEN_MINUS: {
-        reduce(parser, OP_MINUS);
-        add_operator(parser, &parser->current_token);
-    } break;
+    case TOKEN_LEFT_PARENTHESIS: {
+        SyntaxCall *call = ALLOC(DefaultAllocator, SyntaxCall, 1);
+        call->kind = SYNTAX_CALL;
+        call->loc  = parser->previous_token.loc;
 
-    case TOKEN_ASTERISK: {
-        reduce(parser, OP_MULTIPLY);
-        add_operator(parser, &parser->current_token);
-    } break;
+        call->caller = lhs;
 
-    case TOKEN_SLASH: {
-        reduce(parser, OP_DIVIDE);
-        add_operator(parser, &parser->current_token);
-    } break;
+        List<SyntaxElement*> arg_list = {};
+        DEFER(destroy(&arg_list));
 
-    case TOKEN_EQUAL: {
-        reduce(parser, OP_EQUAL);
-        add_operator(parser, &parser->current_token);
-    } break;
+        do {
+            if (current_token_is(parser, TOKEN_RIGHT_PARENTHESIS)) break;
 
-    case TOKEN_DOT: {
-        reduce(parser, OP_DOT);
-        add_operator(parser, &parser->current_token);
-    } break;
+            append(&arg_list, parse_expression(parser));
+        } while (match(parser, TOKEN_COMMA));
+
+        // TODO: The logic for returning is not really correct here I think.
+        if (!consume(parser, TOKEN_RIGHT_PARENTHESIS, "Missing ) to end call.")) return call;
+
+        call->args = create_array(arg_list);
+
+        return call;
+    };
 
     default:
-        return false;
+        report_error(parser->env, parser->previous_token.loc, t_format("%S is not an binary operator.", parser->previous_token.content));
     }
 
-    advance_token(parser);
-
-    return true;
+    return 0;
 }
 
-INTERNAL void parse_expression(Parser *parser) {
-    parser->builder.is_binary = false;
-    parser->builder.operand_stack.size  = 0;
-    parser->builder.operator_stack.size = 0;
+INTERNAL SyntaxElement *parse_expression(Parser *parser, SyntaxOperator prec) {
+    SyntaxElement *elem = parse_unary_expression(parser);
+    if (elem == 0) return elem;
 
-    b32 keep_parsing = true;
-    while (keep_parsing) {
-        if (parser->builder.is_binary) {
-            keep_parsing = parse_binary_expression(parser);
-        } else {
-            keep_parsing = parse_unary_expression(parser);
-        }
+    while (prec > precedence_of(parser->current_token.kind)) {
+        elem = parse_binary_expression(parser, elem);
+        if (elem == 0) return elem;
     }
 
-    reduce(parser);
+    return elem;
 }
 
 INTERNAL SyntaxElement *parse(Parser *parser);
 INTERNAL SyntaxElement *parse_syntax_element(Parser *parser);
 INTERNAL b32 parse_syntax_list(Parser *parser) {
-    parser->list_builder.size = 0;
+    parser->expr_list.size = 0;
 
     do {
         SyntaxElement *element = parse_syntax_element(parser);
         if (!element) {
             return false;
         } else {
-            append(&parser->list_builder, element);
+            append(&parser->expr_list, element);
         }
     } while(match(parser, TOKEN_COMMA));
 
@@ -644,9 +649,9 @@ INTERNAL SyntaxElement *parse_return(Parser *parser) {
     SyntaxReturn *ret = ALLOC(DefaultAllocator, SyntaxReturn, 1);
     ret->kind = SYNTAX_RETURN;
     ret->loc  = loc;
-    ret->returns = create_array(parser->list_builder);
+    ret->returns = create_array(parser->expr_list);
 
-    parser->list_builder.size = 0;
+    parser->expr_list.size = 0;
 
     return ret;
 }
@@ -689,6 +694,8 @@ INTERNAL b32 parse_scope(Parser *parser, SyntaxScope *scope) {
 
 INTERNAL SyntaxElement *parse_scope(Parser *parser) {
     SyntaxScope *scope = ALLOC(DefaultAllocator, SyntaxScope, 1);
+    scope->kind = SYNTAX_SCOPE;
+
     if (!parse_scope(parser, scope)) {
         DEALLOC(DefaultAllocator, scope, 1);
         return 0;
@@ -718,14 +725,14 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
     if (match(parser, TOKEN_COLON)) {
         SourceLocation loc = parser->previous_token.loc;
 
-        if (parser->list_builder.size == 0) {
+        if (parser->expr_list.size == 0) {
             report_error(parser->env, parser->previous_token.loc, "Declaration needs identifiers to bind to.");
             return result;
         }
 
-        auto *builder = &parser->list_builder;
-        for (s64 i = 0; i < parser->list_builder.size; i += 1) {
-            auto *expression = parser->list_builder[i];
+        auto *builder = &parser->expr_list;
+        for (s64 i = 0; i < parser->expr_list.size; i += 1) {
+            auto *expression = parser->expr_list[i];
 
             if (expression->kind != SYNTAX_IDENTIFIER) {
                 report_error(parser->env, expression->loc, "Declaration needs identifier to bind.");
@@ -737,8 +744,8 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
         decl->kind = SYNTAX_SYMBOL_DECL;
         decl->loc  = loc;
 
-        decl->symbols = create_identifier_list(parser->list_builder);
-        parser->list_builder.size = 0;
+        decl->symbols = create_identifier_list(parser->expr_list);
+        parser->expr_list.size = 0;
 
         if (!parse_syntax_list(parser)) {
             // TODO: Free array decl->symbols and decl.
@@ -746,14 +753,14 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
             return result;
         }
 
-        decl->elements = create_array(parser->list_builder);
-        parser->list_builder.size = 0;
+        decl->elements = create_array(parser->expr_list);
+        parser->expr_list.size = 0;
 
         result = decl;
     } else if (match(parser, TOKEN_EQUAL_SIGN)) {
         SourceLocation loc = parser->previous_token.loc;
 
-        if (parser->list_builder.size == 0) {
+        if (parser->expr_list.size == 0) {
             report_error(parser->env, parser->previous_token.loc, "Declaration needs identifiers to bind to.");
             return result;
         }
@@ -763,8 +770,8 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
         decl->kind = SYNTAX_VARIABLE_DECL;
         decl->loc  = loc;
 
-        decl->variables = create_identifier_list(parser->list_builder);
-        parser->list_builder.size = 0;
+        decl->variables = create_identifier_list(parser->expr_list);
+        parser->expr_list.size = 0;
 
         if (!parse_syntax_list(parser)) {
             // TODO: Free array decl->symbols and decl.
@@ -772,8 +779,8 @@ INTERNAL SyntaxElement *parse_declaration(Parser *parser) {
             return result;
         }
 
-        decl->expressions = create_array(parser->list_builder);
-        parser->list_builder.size = 0;
+        decl->expressions = create_array(parser->expr_list);
+        parser->expr_list.size = 0;
 
         result = decl;
     } else {
@@ -860,7 +867,7 @@ INTERNAL SyntaxElement *parse_lambda_declaration(Parser *parser) {
         if (!consume(parser, TOKEN_COLON, "Expected type specifier for argument.")) return 0;
 
         SyntaxLambdaParameter *param = append(&param_list);
-        param->kind = SYNTAX_LAMBDA_ARGUMENT;
+        param->kind = SYNTAX_LAMBDA_PARAMETER;
         param->loc = parser->current_token.loc;
         param->name = name_token.content;
         param->name_loc = name_token.loc;
@@ -1032,14 +1039,7 @@ INTERNAL SyntaxElement *parse_syntax_element(Parser *parser) {
         }
     }
 
-    parse_expression(parser);
-
-    if (parser->builder.operand_stack.size != 1) {
-        report_error(parser->env, parser->current_token.loc, "Expected expression.");
-        return 0;
-    }
-
-    return parser->builder.operand_stack[0];
+    return parse_expression(parser);
 }
 
 INTERNAL SyntaxElement *parse(Parser *parser) {
@@ -1055,8 +1055,8 @@ INTERNAL SyntaxElement *parse(Parser *parser) {
         return parse_declaration(parser);
     }
 
-    if (parser->list_builder.size == 1) {
-        return parser->list_builder[0];
+    if (parser->expr_list.size == 1) {
+        return parser->expr_list[0];
     }
 
     report_error(parser->env, parser->current_token.loc, "Unused list.");

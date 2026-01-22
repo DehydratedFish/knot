@@ -39,6 +39,7 @@ enum TypeKind {
     TYPE_STRING,
     TYPE_STRUCT,
     TYPE_LAMBDA,
+    TYPE_UNRESOLVED_OVERLOAD_SET,
 };
 
 enum TypeFlags {
@@ -58,6 +59,7 @@ struct Type {
         IntegerType integer;
         StructType  structure;
         LambdaType  lambda;
+        Array<Type*> overloads;
     } as;
 };
 
@@ -91,17 +93,19 @@ struct SourceLocation {
 
 // NOTE: In order of precedence.
 enum SyntaxOperator {
+    OP_CALL,
+
     OP_EQUAL,
 
     OP_DOT,
 
     OP_REFERENCE,
 
-    OP_MULTIPLY,
-    OP_DIVIDE,
+    OP_MUL,
+    OP_DIV,
 
-    OP_PLUS,
-    OP_MINUS,
+    OP_ADD,
+    OP_SUB,
 
     OP_COUNT,
 };
@@ -124,6 +128,8 @@ inline String enum_string(SyntaxOperator op) {
 
 enum SyntaxKind {
     SYNTAX_KIND_NONE,
+    
+    SYNTAX_SCOPE,
 
     SYNTAX_IDENTIFIER,
     SYNTAX_INTEGER_LITERAL,
@@ -142,7 +148,7 @@ enum SyntaxKind {
     SYNTAX_STRUCT_FIELD,
 
     SYNTAX_LAMBDA_DECL,
-    SYNTAX_LAMBDA_ARGUMENT,
+    SYNTAX_LAMBDA_PARAMETER,
     SYNTAX_RETURN,
 
     SYNTAX_KIND_COUNT,
@@ -151,6 +157,8 @@ enum SyntaxKind {
 inline String enum_string(SyntaxKind kind) {
     String lookup[] = {
         "SYNTAX_KIND_NONE",
+
+        "SYNTAX_SCOPE",
 
         "SYNTAX_IDENTIFIER",
         "SYNTAX_INTEGER_LITERAL",
@@ -169,7 +177,7 @@ inline String enum_string(SyntaxKind kind) {
         "SYNTAX_STRUCT_FIELD",
 
         "SYNTAX_LAMBDA_DECL",
-        "SYNTAX_LAMBDA_ARGUMENT",
+        "SYNTAX_LAMBDA_PARAMETER",
         "SYNTAX_RETURN",
 
         "SYNTAX_KIND_COUNT",
@@ -195,11 +203,12 @@ struct SyntaxScope : SyntaxElement {
     SyntaxScope *parent;
     List<SyntaxElement*> elements;
 
-    HashTable<String, Identifier> identifier_table;
+    HashTable<String, Identifier*> identifier_table;
 };
 
 struct SyntaxIdentifier : SyntaxElement {
     String name;
+    Identifier *identifier;
 };
 
 struct SyntaxIntegerLiteral : SyntaxElement {
@@ -254,6 +263,11 @@ struct SyntaxLambda : SyntaxElement {
     Array<SyntaxElement> returns;
 
     SyntaxScope scope;
+};
+
+struct SyntaxCall : SyntaxElement {
+    SyntaxElement *caller;
+    Array<SyntaxElement*> args;
 };
 
 struct SyntaxReturn : SyntaxElement {

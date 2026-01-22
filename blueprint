@@ -16,8 +16,6 @@ executable: knot {
 brick: llvm_develop {
     include: "D:\lib\llvm\include";
 
-    options(@msvc): "/std:c++17";
-
-    dependencies(@msvc): "ntdll.lib", "lib/llvm_monstrocity.lib";
+    dependencies(@msvc): "D:\lib\llvm\lib\LLVM-C.lib";
 }
 
