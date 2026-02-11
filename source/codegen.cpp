@@ -45,11 +45,15 @@ INTERNAL LLVMValueRef eval(CodegenState *state, SyntaxElement *elem) {
             return LLVMGetNamedFunctionWithLength(state->module, (char*)name.data, name.size);
         } else if (ident->type.kind == TYPE_INTEGER) {
             if (ident->type.flags & TYPE_FLAG_CONSTANT) {
-                SyntaxIntegerLiteral *literal = (SyntaxIntegerLiteral*)ident->identifier->element;
+                Identifier *identifier = resolve_identifier(state->env->current_scope, ident->name);
+                if (identifier->kind == IDENTIFIER_UNDEFINED) break;
+
+                SyntaxIntegerLiteral *literal = (SyntaxIntegerLiteral*)identifier->element;
                 // TODO: Proper typing.
                 return LLVMConstInt(LLVMInt32TypeInContext(state->context), to_s64(literal->value), true);
             }
         }
+        print("Identifier: %S\n", ident->name);
         die("eval: SYNTAX_IDENTIFIER not complete.");
     } break;
 
@@ -76,6 +80,10 @@ INTERNAL LLVMValueRef eval(CodegenState *state, SyntaxElement *elem) {
 }
 
 INTERNAL void codegen_scope(CodegenState *state, SyntaxScope *scope) {
+    SyntaxScope *old_scope = state->env->current_scope;
+    state->env->current_scope = scope;
+    DEFER(state->env->current_scope = old_scope);
+
     for (s64 i = 0; i < scope->elements.size; i += 1) {
         codegen(state, scope->elements[i]);
     }

@@ -184,7 +184,6 @@ s32 application_main(Array<String> args) {
 
 
     developer_print("\nDEBUG: Codegen.\n");
-    platform_flush_write_buffer(Console.out);
     codegen_llvm(&env);
 
     print("\nCompilation finished.\n");

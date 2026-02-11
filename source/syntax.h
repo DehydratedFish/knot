@@ -203,12 +203,18 @@ struct SyntaxScope : SyntaxElement {
     SyntaxScope *parent;
     List<SyntaxElement*> elements;
 
-    HashTable<String, Identifier*> identifier_table;
+    HashTable<String, Identifier> identifier_table;
 };
+
+Identifier *resolve_identifier(SyntaxScope *scope, String name);
 
 struct SyntaxIdentifier : SyntaxElement {
     String name;
-    Identifier *identifier;
+
+    // TODO: Maybe store a pointer to the Identifier struct after type checking?
+    //       That would mean no second lookup in codegen but also that they need
+    //       to be stored as pointers in the scope HashTable as well. Which
+    //       is kinda awkward to use.
 };
 
 struct SyntaxIntegerLiteral : SyntaxElement {

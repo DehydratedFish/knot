@@ -7,6 +7,7 @@
 #include "array.h"
 
 
+
 #define CHECK_TYPING(expr) { TypingResult expr_result = (expr); if (expr_result != TYPING_CORRECT) return expr_result; }
 
 enum TypingResult {
@@ -55,7 +56,7 @@ INTERNAL b32 is_same_type(Type *fst, Type *snd) {
 INTERNAL b32 declare(SyntaxScope *scope, IdentifierKind kind, String name, SyntaxElement *elem) {
     assert(name != "");
 
-    Identifier *ident = *upsert(&scope->identifier_table, name);
+    Identifier *ident = upsert(&scope->identifier_table, name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = name;
@@ -69,7 +70,7 @@ INTERNAL b32 declare(SyntaxScope *scope, IdentifierKind kind, String name, Synta
 INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
     assert(type->name != "");
 
-    Identifier *ident = *upsert(&scope->identifier_table, type->name);
+    Identifier *ident = upsert(&scope->identifier_table, type->name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = type->name;
@@ -82,7 +83,7 @@ INTERNAL b32 declare_type(SyntaxScope *scope, Type *type) {
 INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
     assert(name != "");
 
-    Identifier *ident = *upsert(&scope->identifier_table, name);
+    Identifier *ident = upsert(&scope->identifier_table, name);
     if (ident->kind != IDENTIFIER_UNDEFINED) return false;
 
     ident->name = name;
@@ -97,7 +98,7 @@ INTERNAL b32 declare_variable(SyntaxScope *scope, String name, Type *type) {
 INTERNAL void collect_overloads(SyntaxScope *scope, String name, List<Type*> *list) {
     SyntaxScope *next = scope->parent;
     while (next) {
-        Identifier *ident = *upsert(&scope->identifier_table, name);
+        Identifier *ident = upsert(&scope->identifier_table, name);
         if (ident->kind == IDENTIFIER_LAMBDA) {
             append(list, (Array<Type*>)ident->lambda_set);
         }
@@ -150,7 +151,7 @@ INTERNAL b32 overload_found(Identifier *ident, Type *type) {
 INTERNAL b32 declare_lambda(SyntaxScope *scope, String name, Type *type) {
     assert(name != "");
 
-    Identifier *ident = *upsert(&scope->identifier_table, name);
+    Identifier *ident = upsert(&scope->identifier_table, name);
 
     switch (ident->kind) {
     case IDENTIFIER_UNDEFINED:
@@ -287,15 +288,13 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
 }
 
 
-INTERNAL Identifier *resolve_identifier(SyntaxScope *scope, String name) {
+Identifier *resolve_identifier(SyntaxScope *scope, String name) {
     SyntaxScope *search = scope;
 
-    // NOTE: Upserting because the Identifier will default to IDENTIFIER_UNDEFINED so a check for
-    //       null is not necessary.
-    Identifier *identifier = *upsert(&search->identifier_table, name);
+    Identifier *identifier = upsert(&search->identifier_table, name);
     while (identifier->kind == IDENTIFIER_UNDEFINED && search->parent) {
         search = search->parent;
-        identifier = *upsert(&search->identifier_table, name);
+        identifier = upsert(&search->identifier_table, name);
     }
 
     return identifier;
@@ -303,7 +302,6 @@ INTERNAL Identifier *resolve_identifier(SyntaxScope *scope, String name) {
 
 INTERNAL TypingResult infer_identifier(Environment *env, SyntaxIdentifier *ident) {
     Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
-    ident->identifier = identifier;
 
     switch (identifier->kind) {
     case IDENTIFIER_TYPE:
