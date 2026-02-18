@@ -17,5 +17,6 @@ brick: llvm_develop {
     include: "D:\lib\llvm\include";
 
     dependencies(@msvc): "D:\lib\llvm\lib\LLVM-C.lib";
+    dependencies(@gcc): "-lLLVM-21";
 }
 

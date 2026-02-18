@@ -1,9 +1,8 @@
-
+write :: (buffer: u8&, size: s32) #foreign;
 
 func :: (num: s32): s32 {
     return num + 2;
 }
-
 
 main :: (): int {
     return func(42);

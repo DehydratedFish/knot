@@ -14,20 +14,18 @@ struct IntegerType {
     b32 is_signed;
 };
 
+struct StringType {
+    b32 is_allocated;
+};
+
 struct StructType {
     SyntaxStruct *decl;
 };
 
 
-struct BuiltinLambdaInfo {
-    Array<Type> params;
-    Array<Type> returns;
-};
-
 struct LambdaType {
     // TODO: Unionize.
     SyntaxLambda *decl;
-    BuiltinLambdaInfo *builtin_info;
 };
 
 enum TypeKind {
@@ -39,12 +37,33 @@ enum TypeKind {
     TYPE_STRING,
     TYPE_STRUCT,
     TYPE_LAMBDA,
-    TYPE_UNRESOLVED_OVERLOAD_SET,
+    TYPE_UNRESOLVED_LAMBDA,
+
+    TYPE_KIND_COUNT,
+};
+
+inline String enum_string(TypeKind kind) {
+    assert(kind < TYPE_KIND_COUNT);
+
+    String lookup[] = {
+        "TYPE_UNDEFINED",
+        "TYPE_SPECIFIER",
+
+        "TYPE_INTEGER",
+        "TYPE_BOOL",
+        "TYPE_STRING",
+        "TYPE_STRUCT",
+        "TYPE_LAMBDA",
+        "TYPE_UNRESOLVED_LAMBDA",
+    };
+
+    return lookup[kind];
 };
 
 enum TypeFlags {
     TYPE_FLAG_BUILTIN  = 1 << 0,
     TYPE_FLAG_CONSTANT = 1 << 1,
+    TYPE_FLAG_FOREIGN  = 1 << 2,
 };
 
 struct Type {
@@ -57,9 +76,9 @@ struct Type {
 
     union {
         IntegerType integer;
+        StringType  string;
         StructType  structure;
         LambdaType  lambda;
-        Array<Type*> overloads;
     } as;
 };
 
@@ -67,7 +86,7 @@ struct Type {
 enum IdentifierKind {
     IDENTIFIER_UNDEFINED,
 
-    IDENTIFIER_COMPILE_TIME_VALUE,
+    IDENTIFIER_SYNTAX,
     IDENTIFIER_VARIABLE,
     IDENTIFIER_TYPE,
     IDENTIFIER_LAMBDA,
@@ -81,6 +100,9 @@ struct Identifier {
     Type *type;
     SyntaxElement *element;
     List<Type*> lambda_set;
+
+    // NOTE: I need to store some LLVMValueRefs somewhere... But I don't like this.
+    void *backend_data;
 };
 
 
@@ -272,7 +294,7 @@ struct SyntaxLambda : SyntaxElement {
 };
 
 struct SyntaxCall : SyntaxElement {
-    SyntaxElement *caller;
+    SyntaxElement *callee;
     Array<SyntaxElement*> args;
 };
 

@@ -1,0 +1,11 @@
+
+
+num :: (number: s32) {
+    return number + 1;
+}
+
+
+s32 main() {
+    return num(42);
+}
+

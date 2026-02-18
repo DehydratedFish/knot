@@ -130,6 +130,32 @@ INTERNAL Token parse_identifier(Parser *parser) {
     return token;
 }
 
+INTERNAL Token parse_directive(Parser *parser, SourceLocation loc) {
+    u8 *mark = &parser->source_code[parser->loc.pos];
+    s32 size = 0;
+
+    u8 c;
+    while (peek_char(parser, &c)) {
+        s32 type = Lookup[c];
+        if (type == CHAR_CHARACTER || type == CHAR_DIGIT || c == '_') {
+            size += 1;
+            advance_source(parser);
+        } else {
+            break;
+        }
+    }
+
+    Token token = {
+        TOKEN_DIRECTIVE,
+        loc,
+        {mark, size}
+    };
+
+    // TODO: Parse params here as well?
+
+    return token;
+}
+
 INTERNAL Token parse_number(Parser *parser) {
     u8 *mark = &parser->source_code[parser->loc.pos];
     s32 size = 0;
@@ -244,11 +270,6 @@ INTERNAL Token parse_control(Parser *parser) {
 
     case '+': { token.kind = TOKEN_PLUS; } break;
     case '-': {
-        if (match_char(parser, '>')) {
-            token.kind = TOKEN_RIGHT_ARROW;
-            token.content.size += 1;
-            break;
-        }
         token.kind = TOKEN_MINUS;
     } break;
 
@@ -262,6 +283,11 @@ INTERNAL Token parse_control(Parser *parser) {
     case '}': { token.kind = TOKEN_RIGHT_BRACE; } break;
     case '[': { token.kind = TOKEN_LEFT_BRACKET; } break;
     case ']': { token.kind = TOKEN_RIGHT_BRACKET; } break;
+
+    case '#': {
+        // TODO: Passing token.loc looks weird.
+        token = parse_directive(parser, token.loc);
+    } break;
 
     default:
         parse_error(parser, token.loc, "Unsupported character.");
@@ -407,105 +433,6 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 }
 
 
-/*
-INTERNAL void reduce(Parser *parser, SyntaxOperator op = OP_COUNT) {
-    auto *stack = &parser->builder.operator_stack;
-    while (stack->size) {
-        OperatorInfo last = stack->data[stack->size - 1];
-        if (op < last.op) break;
-
-        switch (last.op) {
-        case OP_PLUS:
-        case OP_MINUS:
-        case OP_MULTIPLY:
-        case OP_DIVIDE: 
-        case OP_EQUAL: {
-            SyntaxBinaryOperator *bin = ALLOC(DefaultAllocator, SyntaxBinaryOperator, 1);
-            bin->kind = SYNTAX_BINARY_OPERATOR;
-            bin->loc  = last.loc;
-            bin->text = last.text;
-            bin->operator_kind = last.op;
-
-            auto *operands = &parser->builder.operand_stack;
-            assert(operands->size >= 2);
-            
-            bin->lhs = (*operands)[-2];
-            bin->rhs = (*operands)[-1];
-
-            operands->size -= 2;
-
-            add_operand(parser, bin);
-        } break;
-
-        case OP_DOT: {
-            auto *operands = &parser->builder.operand_stack;
-            assert(operands->size >= 2);
-
-            SyntaxElement *lhs = (*operands)[-2];
-            SyntaxElement *rhs = (*operands)[-1];
-
-            if (lhs->kind != SYNTAX_IDENTIFIER) {
-                report_error(parser->env, lhs->loc, "Left of . is not an identifier.");
-                return;
-            }
-            if (rhs->kind != SYNTAX_IDENTIFIER) {
-                report_error(parser->env, rhs->loc, "Right of . is not an identifier.");
-                return;
-            }
-
-            SyntaxDotOperator *dot = ALLOC(DefaultAllocator, SyntaxDotOperator, 1);
-            dot->kind = SYNTAX_DOT;
-            dot->loc  = last.loc;
-
-            dot->lhs = (SyntaxIdentifier*)lhs;
-            dot->rhs = (SyntaxIdentifier*)rhs;
-
-            operands->size -= 2;
-            add_operand(parser, dot);
-        } break;
-
-        case OP_REFERENCE: {
-            SyntaxReference *ref = ALLOC(DefaultAllocator, SyntaxReference, 1);
-            ref->kind = SYNTAX_REFERENCE;
-            ref->loc  = last.loc;
-
-            auto *operands = &parser->builder.operand_stack;
-            assert(operands->size >= 1);
-
-            ref->thing = (*operands)[-1];
-
-            operands->size -= 1;
-
-            add_operand(parser, ref);
-        } break;
-
-        case OP_CALL: {
-            SyntaxCall *call = ALLOC(DefaultAllocator, SyntaxCall, 1);
-            call->kind = SYNTAX_CALL;
-            call->loc  = last.loc;
-
-            // NOTE: Parsing function args.
-            assert(parser->current_token.kind == TOKEN_LEFT_PARENTHESIS);
-            List<SyntaxElement*> arg_list = {};
-            do {
-                if (current_token_is(parser, TOKEN_RIGHT_PARENTHESIS)) {
-                    call->args = create_array(arg_list);
-                    break;
-                }
-
-                append(arg_list, parse_expression(parser));
-            } while (match(parser, TOKEN_COMMA));
-        } break;
-
-        default:
-            die("Unhandled reduce for operator.\n");
-        }
-
-        stack->size -= 1;
-    }
-}
-*/
-
 INTERNAL SyntaxOperator precedence_of(TokenKind kind) {
     switch (kind) {
     case TOKEN_PLUS:      return OP_ADD; break;
@@ -584,7 +511,7 @@ INTERNAL SyntaxElement *parse_binary_expression(Parser *parser, SyntaxElement *l
         call->kind = SYNTAX_CALL;
         call->loc  = parser->previous_token.loc;
 
-        call->caller = lhs;
+        call->callee = lhs;
 
         List<SyntaxElement*> arg_list = {};
         DEFER(destroy(&arg_list));
@@ -891,8 +818,18 @@ INTERNAL SyntaxElement *parse_lambda_declaration(Parser *parser) {
     lambda->kind = SYNTAX_LAMBDA_DECL;
     lambda->loc  = loc;
 
+    lambda->scope.kind = SYNTAX_SCOPE;
+
     lambda->params  = create_array(param_list);
     lambda->returns = create_array(return_list);
+
+    // NOTE: Only parse the header declaration. Body is possibly from an object file.
+    if (match(parser, TOKEN_DIRECTIVE) &&
+        parser->previous_token.content == "foreign")
+    {
+        lambda->type.flags |= TYPE_FLAG_FOREIGN;
+        return lambda;
+    }
 
     if (!parse_scope(parser, &lambda->scope)) return 0;
 
@@ -1039,6 +976,10 @@ INTERNAL SyntaxElement *parse_syntax_element(Parser *parser) {
         }
     }
 
+    if (current_token_is(parser, TOKEN_DIRECTIVE)) {
+
+    }
+
     return parse_expression(parser);
 }
 
@@ -1135,6 +1076,7 @@ Environment parse_knot_file(String filename) {
     };
 
     env.source = read_result.content;
+    env.root.kind = SYNTAX_SCOPE; // TODO: This needs to be set and should go into an init function.
 
     Parser parser = init_parser(filename, read_result.content);
     parser.env = &env;

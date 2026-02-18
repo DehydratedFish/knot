@@ -4,7 +4,6 @@
 #include "string2.h"
 #include "io.h"
 
-
 #include "llvm-c/Core.h"
 #include "llvm-c/Analysis.h"
 #include "llvm-c/TargetMachine.h"
@@ -20,9 +19,12 @@ struct CodegenState {
 
 
 INTERNAL LLVMTypeRef as_llvm_type(CodegenState *state, Type *type) {
+    print("%S\n", type->name);
     if (type->flags & TYPE_FLAG_BUILTIN) {
         if (type->name == "int") {
             return LLVMInt32TypeInContext(state->context);
+        } else if (type->name == "u8") {
+            return LLVMInt8TypeInContext(state->context);
         } else if (type->name == "s32") {
             return LLVMInt32TypeInContext(state->context);
         }
@@ -34,129 +36,167 @@ INTERNAL LLVMTypeRef as_llvm_type(CodegenState *state, Type *type) {
     return 0;
 }
 
-INTERNAL void codegen(CodegenState *state, SyntaxElement *elem);
-
-INTERNAL LLVMValueRef eval(CodegenState *state, SyntaxElement *elem) {
+INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
     switch (elem->kind) {
     case SYNTAX_IDENTIFIER: {
-        SyntaxIdentifier *ident = (SyntaxIdentifier*)elem;
+        auto  *ident = (SyntaxIdentifier*)elem;
+
         if (ident->type.kind == TYPE_LAMBDA) {
             String name = ident->type.name;
             return LLVMGetNamedFunctionWithLength(state->module, (char*)name.data, name.size);
         } else if (ident->type.kind == TYPE_INTEGER) {
-            if (ident->type.flags & TYPE_FLAG_CONSTANT) {
-                Identifier *identifier = resolve_identifier(state->env->current_scope, ident->name);
-                if (identifier->kind == IDENTIFIER_UNDEFINED) break;
+            Identifier *identifier = resolve_identifier(state->env->current_scope, ident->name);
+            if (identifier->kind == IDENTIFIER_UNDEFINED) break;
 
+            if (ident->type.flags & TYPE_FLAG_CONSTANT) {
                 SyntaxIntegerLiteral *literal = (SyntaxIntegerLiteral*)identifier->element;
                 // TODO: Proper typing.
                 return LLVMConstInt(LLVMInt32TypeInContext(state->context), to_s64(literal->value), true);
+            } else {
+                assert(identifier->backend_data != 0);
+
+                return (LLVMValueRef)identifier->backend_data;
             }
         }
-        print("Identifier: %S\n", ident->name);
+        print("Identifier: %S with kind %S\n", ident->name, enum_string(ident->type.kind));
         die("eval: SYNTAX_IDENTIFIER not complete.");
     } break;
 
     case SYNTAX_INTEGER_LITERAL: {
-        SyntaxIntegerLiteral *literal = (SyntaxIntegerLiteral*)elem;
+        auto literal = (SyntaxIntegerLiteral*)elem;
         return LLVMConstInt(as_llvm_type(state, &literal->type), to_s64(literal->value), elem->type.as.integer.is_signed);
     } break;
 
     case SYNTAX_BINARY_OPERATOR: {
-        SyntaxBinaryOperator *op = (SyntaxBinaryOperator*)elem;
+        auto *op = (SyntaxBinaryOperator*)elem;
 
-        LLVMValueRef lhs = eval(state, op->lhs);
-        LLVMValueRef rhs = eval(state, op->rhs);
+        LLVMValueRef lhs = codegen(state, op->lhs);
+        LLVMValueRef rhs = codegen(state, op->rhs);
 
         return LLVMBuildAdd(state->builder, lhs, rhs, "tmp");
     } break;
 
-    default:
-        print("Unknown SyntaxElement kind %S for eval.\n", enum_string(elem->kind));
-        die("Aborting...\n");
-    }
-
-    return 0;
-}
-
-INTERNAL void codegen_scope(CodegenState *state, SyntaxScope *scope) {
-    SyntaxScope *old_scope = state->env->current_scope;
-    state->env->current_scope = scope;
-    DEFER(state->env->current_scope = old_scope);
-
-    for (s64 i = 0; i < scope->elements.size; i += 1) {
-        codegen(state, scope->elements[i]);
-    }
-}
-
-INTERNAL void codegen_symbol_decl(CodegenState *state, SyntaxSymbolDeclaration *decl) {
-    for (s64 i = 0; i < decl->elements.size; i += 1) {
-        codegen(state, decl->elements[i]);
-    }
-}
-
-INTERNAL void codegen_lambda_decl(CodegenState *state, SyntaxLambda *decl) {
-    List<LLVMTypeRef> params = {};
-    for (s64 i = 0; i < decl->params.size; i += 1) {
-        append(&params, as_llvm_type(state, &decl->params[i].type));
-    }
-
-    LLVMTypeRef return_type;
-    if (decl->returns.size == 0) {
-        return_type = LLVMVoidTypeInContext(state->context);
-    } else if (decl->returns.size == 1) {
-        return_type = as_llvm_type(state, &decl->returns[0].type);
-    } else {
-        // TODO: Create a tuple or so for multiple returns.
-        die("CODEGEN: Multiple returns not possible for now.");
-    }
-
-    assert(decl->returns.size < 2);
-
-    char *name = c_string_copy(decl->type.name, TempAllocator);
-
-    LLVMTypeRef  lambda_type  = LLVMFunctionType(return_type, params.data, params.size, false);
-    LLVMValueRef lambda_value = LLVMAddFunction(state->module, name, lambda_type);
-
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(state->context, lambda_value, "entry");
-    LLVMPositionBuilderAtEnd(state->builder, entry);
-
-    codegen_scope(state, &decl->scope);
-}
-
-INTERNAL void codegen_return(CodegenState *state, SyntaxReturn *ret) {
-    if (ret->returns.size == 0) {
-        LLVMBuildRetVoid(state->builder);
-    } else if (ret->returns.size == 1) {
-        LLVMBuildRet(state->builder, eval(state, ret->returns[0]));
-    } else {
-        // TODO: Return multiple values as tuple?
-        die("CODEGEN: Return has two or more values.");
-    }
-}
-
-INTERNAL void codegen(CodegenState *state, SyntaxElement *elem) {
-    switch (elem->kind) {
     case SYNTAX_SCOPE: {
-        codegen_scope(state, (SyntaxScope*)elem);
+        auto scope = (SyntaxScope*)elem;
+
+        SyntaxScope *old_scope = state->env->current_scope;
+        state->env->current_scope = scope;
+        DEFER(state->env->current_scope = old_scope);
+
+        for (s64 i = 0; i < scope->elements.size; i += 1) {
+            codegen(state, scope->elements[i]);
+        }
     } break;
 
     case SYNTAX_SYMBOL_DECL: {
-        codegen_symbol_decl(state, (SyntaxSymbolDeclaration*)elem);
+        auto decl = (SyntaxSymbolDeclaration*)elem;
+
+        for (s64 i = 0; i < decl->elements.size; i += 1) {
+            Identifier *identifier = find(&state->env->current_scope->identifier_table, decl->symbols[i]->name);
+            assert(identifier != 0);
+            
+            identifier->backend_data = codegen(state, decl->elements[i]);
+            print("%S: %p\n", decl->symbols[i]->name, identifier->backend_data);
+        }
     } break;
 
     case SYNTAX_LAMBDA_DECL: {
-        codegen_lambda_decl(state, (SyntaxLambda*)elem);
+        auto decl = (SyntaxLambda*)elem;
+
+        List<LLVMTypeRef> params = {};
+        DEFER(destroy(&params));
+        for (s64 i = 0; i < decl->params.size; i += 1) {
+            append(&params, as_llvm_type(state, &decl->params[i].type));
+        }
+
+        LLVMTypeRef return_type;
+        if (decl->returns.size == 0) {
+            return_type = LLVMVoidTypeInContext(state->context);
+        } else if (decl->returns.size == 1) {
+            return_type = as_llvm_type(state, &decl->returns[0].type);
+        } else {
+            // TODO: Create a tuple or so for multiple returns.
+            die("CODEGEN: Multiple returns not possible for now.");
+        }
+
+        assert(decl->returns.size < 2);
+
+        char *name = c_string_copy(decl->type.name, TempAllocator);
+        print("name %s\n", name);
+
+        LLVMTypeRef  lambda_type  = LLVMFunctionType(return_type, params.data, params.size, false);
+        LLVMValueRef lambda_value = LLVMAddFunction(state->module, name, lambda_type);
+
+        for (s64 i = 0; i < params.size; i += 1) {
+            Identifier *identifier = find(&decl->scope.identifier_table, decl->params[i].name);
+            assert(identifier != 0);
+
+            identifier->backend_data = LLVMGetParam(lambda_value, i);
+        }
+
+        LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(state->context, lambda_value, "entry");
+        LLVMPositionBuilderAtEnd(state->builder, entry);
+
+        codegen(state, &decl->scope);
+
+        if (decl->returns.size == 0) {
+            LLVMBuildRetVoid(state->builder);
+        }
+
+        return lambda_value;
     } break;
 
     case SYNTAX_RETURN: {
-        codegen_return(state, (SyntaxReturn*)elem);
+        auto ret = (SyntaxReturn*)elem;
+
+        if (ret->returns.size == 0) {
+            LLVMBuildRetVoid(state->builder);
+        } else if (ret->returns.size == 1) {
+            LLVMBuildRet(state->builder, codegen(state, ret->returns[0]));
+        } else {
+            // TODO: Return multiple values as tuple?
+            die("CODEGEN: Return has two or more values.");
+        }
+    } break;
+
+    case SYNTAX_CALL: {
+        auto call = (SyntaxCall*)elem;
+
+        if (call->callee->kind != SYNTAX_IDENTIFIER) {
+            die("CODEGEN: Currently only identifiers callable.");
+        }
+
+        String name = ((SyntaxIdentifier*)call->callee)->name;
+        Identifier *identifier = resolve_identifier(state->env->current_scope, name);
+        assert(identifier != 0);
+
+        LLVMValueRef lambda = (LLVMValueRef)identifier->backend_data;
+
+        List<LLVMValueRef> args = {};
+        DEFER(destroy(&args));
+
+        for (s64 i = 0; i < call->args.size; i += 1) {
+            append(&args, codegen(state, call->args[i]));
+        }
+
+        List<LLVMTypeRef> params = {};
+        DEFER(destroy(&params));
+        for (s64 i = 0; i < call->args.size; i += 1) {
+            append(&params, as_llvm_type(state, &call->args[i]->type));
+        }
+
+        LLVMTypeRef return_type = as_llvm_type(state, &call->type.as.lambda.decl->returns[0].type);
+        LLVMTypeRef lambda_type = LLVMFunctionType(return_type, params.data, params.size, false);
+
+        return LLVMBuildCall2(state->builder, lambda_type, lambda, args.data, args.size, "call");
     } break;
 
     default:
         print("Unknown SyntaxElement kind %S.\n", enum_string(elem->kind));
         die("Aborting...\n");
     }
+
+    return 0;
 }
 
 void codegen_llvm(Environment *env) {
@@ -166,7 +206,7 @@ void codegen_llvm(Environment *env) {
     state.builder = LLVMCreateBuilderInContext(state.context);
     state.env     = env;
 
-    codegen_scope(&state, &env->root);
+    codegen(&state, &env->root);
 
     char *error = 0;
     LLVMVerifyModule(state.module, LLVMAbortProcessAction, &error);

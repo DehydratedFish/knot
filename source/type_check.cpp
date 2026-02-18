@@ -111,26 +111,14 @@ INTERNAL b32 is_same_overload(Type *fst, Type *snd) {
     assert(fst->kind == TYPE_LAMBDA && snd->kind == TYPE_LAMBDA);
     if ((fst->flags & TYPE_FLAG_BUILTIN) != (snd->flags & TYPE_FLAG_BUILTIN)) return false;
 
-    if (fst->flags & TYPE_FLAG_BUILTIN) {
-        auto *fst_params = &fst->as.lambda.builtin_info->params;
-        auto *snd_params = &snd->as.lambda.builtin_info->params;
+    auto *fst_params = &fst->as.lambda.decl->params;
+    auto *snd_params = &snd->as.lambda.decl->params;
 
-        if (fst_params->size != snd_params->size) return false;
-        if (fst_params->size == 0) return true;
+    if (fst_params->size != snd_params->size) return false;
+    if (fst_params->size == 0) return true;
 
-        for (s64 i = 0; i < fst_params->size; i += 1) {
-            if (!is_same_type(&(*fst_params)[i], &(*snd_params)[i])) return false;
-        }
-    } else {
-        auto *fst_params = &fst->as.lambda.decl->params;
-        auto *snd_params = &snd->as.lambda.decl->params;
-
-        if (fst_params->size != snd_params->size) return false;
-        if (fst_params->size == 0) return true;
-
-        for (s64 i = 0; i < fst_params->size; i += 1) {
-            if (!is_same_type(&(*fst_params)[i].type, &(*snd_params)[i].type)) return false;
-        }
+    for (s64 i = 0; i < fst_params->size; i += 1) {
+        if (!is_same_type(&(*fst_params)[i].type, &(*snd_params)[i].type)) return false;
     }
 
     return true;
@@ -191,13 +179,13 @@ INTERNAL Type BuiltinTypeBool;
 INTERNAL Type BuiltinTypeString;
 
 INTERNAL Type BuiltinAdd;
-INTERNAL BuiltinLambdaInfo BuiltinAddInfo;
+INTERNAL SyntaxLambda BuiltinAddInfo;
 INTERNAL Type BuiltinSub;
-INTERNAL BuiltinLambdaInfo BuiltinSubInfo;
+INTERNAL SyntaxLambda BuiltinSubInfo;
 INTERNAL Type BuiltinMul;
-INTERNAL BuiltinLambdaInfo BuiltinMulInfo;
+INTERNAL SyntaxLambda BuiltinMulInfo;
 INTERNAL Type BuiltinDiv;
-INTERNAL BuiltinLambdaInfo BuiltinDivInfo;
+INTERNAL SyntaxLambda BuiltinDivInfo;
 
 
 INTERNAL Type make_builtin_integer_type(String name, IntegerType int_type) {
@@ -228,16 +216,16 @@ INTERNAL Type make_builtin_string_type(String name) {
     return type;
 }
 
-INTERNAL Type make_builtin_lambda(String name, BuiltinLambdaInfo *info) {
+INTERNAL Type make_builtin_lambda(String name) {
     Type type = {};
     type.name = name;
     type.kind = TYPE_LAMBDA;
     type.flags |= TYPE_FLAG_BUILTIN;
-    type.as.lambda.builtin_info = info;
 
     return type;
 };
 
+/*
 INTERNAL void fill_builtin_operator(BuiltinLambdaInfo *info, Type *type) {
     // TODO: These should be static allocations.
     info->params    = array_allocate<Type>(2);
@@ -246,6 +234,7 @@ INTERNAL void fill_builtin_operator(BuiltinLambdaInfo *info, Type *type) {
     info->returns    = array_allocate<Type>(1);
     info->returns[0] = *type;
 }
+*/
 
 INTERNAL void declare_builtins(SyntaxScope *scope) {
     BuiltinTypeU8  = make_builtin_integer_type("u8",  {false});
@@ -260,16 +249,17 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
 
     BuiltinTypeString = make_builtin_string_type("string");
 
+    /*
     fill_builtin_operator(&BuiltinAddInfo, &BuiltinTypeS32);
     fill_builtin_operator(&BuiltinSubInfo, &BuiltinTypeS32);
     fill_builtin_operator(&BuiltinMulInfo, &BuiltinTypeS32);
     fill_builtin_operator(&BuiltinDivInfo, &BuiltinTypeS32);
+    */
 
-    BuiltinAdd = make_builtin_lambda("+", &BuiltinAddInfo);
-    BuiltinSub = make_builtin_lambda("-", &BuiltinSubInfo);
-    BuiltinMul = make_builtin_lambda("*", &BuiltinMulInfo);
-    BuiltinDiv = make_builtin_lambda("/", &BuiltinDivInfo);
-
+    BuiltinAdd = make_builtin_lambda("+");
+    BuiltinSub = make_builtin_lambda("-");
+    BuiltinMul = make_builtin_lambda("*");
+    BuiltinDiv = make_builtin_lambda("/");
 
     declare_type(scope, &BuiltinTypeU8);
     declare_type(scope, &BuiltinTypeS32);
@@ -309,13 +299,12 @@ INTERNAL TypingResult infer_identifier(Environment *env, SyntaxIdentifier *ident
         ident->type = *identifier->type;
     } break;
 
-    case IDENTIFIER_COMPILE_TIME_VALUE: {
+    case IDENTIFIER_SYNTAX: {
         ident->type = identifier->element->type;
     } break;
 
     case IDENTIFIER_LAMBDA: {
-        ident->type.kind = TYPE_UNRESOLVED_OVERLOAD_SET;
-        ident->type.as.overloads = identifier->lambda_set;
+        ident->type.kind = TYPE_UNRESOLVED_LAMBDA;
     } break;
 
     case IDENTIFIER_UNDEFINED: {
@@ -450,14 +439,14 @@ INTERNAL b32 bind_symbols(Environment *env, Array<SyntaxIdentifier*> symbols, Sy
                 return false;
             }
         } else if (elem->kind == SYNTAX_INTEGER_LITERAL) {
-            if (!declare(env->current_scope, IDENTIFIER_COMPILE_TIME_VALUE, symbols[0]->name, elem)) {
+            if (!declare(env->current_scope, IDENTIFIER_SYNTAX, symbols[0]->name, elem)) {
                 report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                 return false;
             }
         } else if (elem->kind == SYNTAX_BINARY_OPERATOR) {
             if (elem->type.flags & TYPE_FLAG_CONSTANT) {
-                // TODO: Constant folding.
-                if (!declare(env->current_scope, IDENTIFIER_COMPILE_TIME_VALUE, symbols[0]->name, elem)) {
+                // TODO: Constant folding. Or leave that to the codegen?
+                if (!declare(env->current_scope, IDENTIFIER_SYNTAX, symbols[0]->name, elem)) {
                     report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                     return false;
                 }
@@ -753,33 +742,43 @@ INTERNAL b32 lambda_fits(Environment *env, Type *type, Array<SyntaxElement*> arg
     return false;
 }
 
-INTERNAL b32 resolve_overload(Environment *env, Type *type, Array<SyntaxElement*> args, Array<SyntaxElement*> returns = {}) {
-    if (type->kind == TYPE_UNRESOLVED_OVERLOAD_SET) {
-        for (s64 i = 0; i < type->as.overloads.size; i += 1) {
-            if (lambda_fits(env, type->as.overloads[i], args)) {
-                type = type->as.overloads[i];
-                return true;
-            }
-        }
-    } else {
-        if (lambda_fits(env, &type->as.lambda.decl->type, args)) {
-            return true;
-        }
+INTERNAL s64 resolve_overload(Environment *env, Array<Type*> overloads, Array<SyntaxElement*> args, Array<SyntaxElement*> returns = {}) {
+    for (s64 i = 0; i < overloads.size; i += 1) {
+        if (lambda_fits(env, overloads[i], args)) return i;
     }
 
-    return false;
+    return -1;
+}
+
+INTERNAL Array<Type*> get_overloads(Environment *env, SyntaxElement *elem) {
+    if (elem->kind == SYNTAX_IDENTIFIER) {
+        SyntaxIdentifier *ident = (SyntaxIdentifier*)elem;
+        
+        Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
+        if (identifier == 0) return {};
+        if (identifier->kind != IDENTIFIER_LAMBDA) return {};
+        assert(identifier->lambda_set.size > 0);
+
+        return identifier->lambda_set;
+    }
+
+    return {};
 }
 
 INTERNAL TypingResult check_call(Environment *env, SyntaxCall *call, Type *expected) {
     TypingResult result;
 
-    result = infer(env, call->caller);
+    result = infer(env, call->callee);
     if (result != TYPING_CORRECT) return result;
 
-    if (!resolve_overload(env, &call->caller->type, call->args)) {
+    Array<Type*> overloads = get_overloads(env, call->callee);
+    s64 index = resolve_overload(env, overloads, call->args);
+    if (index == -1) {
         report_error(env, call->loc, "Could not resolve lambda for call.");
         return TYPING_ERROR;
     }
+
+    call->type = *overloads[index];
 
     return TYPING_CORRECT;
 }
