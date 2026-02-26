@@ -6,5 +6,7 @@ knot
 # REMOVE: This is just a quick and dirty llvm lib inlude so I can get working.
 lib
 
+output.obj
+output.exe
 compile_flags.txt
 

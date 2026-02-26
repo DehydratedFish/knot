@@ -11,6 +11,7 @@
 
 struct CodegenState {
     Environment *env;
+    String declaration_name;
 
     LLVMContextRef context;
     LLVMModuleRef  module;
@@ -19,20 +20,31 @@ struct CodegenState {
 
 
 INTERNAL LLVMTypeRef as_llvm_type(CodegenState *state, Type *type) {
-    print("%S\n", type->name);
     if (type->flags & TYPE_FLAG_BUILTIN) {
         if (type->name == "int") {
             return LLVMInt32TypeInContext(state->context);
         } else if (type->name == "u8") {
             return LLVMInt8TypeInContext(state->context);
+        } else if (type->name == "u16") {
+            return LLVMInt16TypeInContext(state->context);
+        } else if (type->name == "u32") {
+            return LLVMInt32TypeInContext(state->context);
+        } else if (type->name == "u64") {
+            return LLVMInt64TypeInContext(state->context);
+        } else if (type->name == "s8") {
+            return LLVMInt8TypeInContext(state->context);
+        } else if (type->name == "s16") {
+            return LLVMInt16TypeInContext(state->context);
         } else if (type->name == "s32") {
             return LLVMInt32TypeInContext(state->context);
+        } else if (type->name == "s64") {
+            return LLVMInt64TypeInContext(state->context);
         }
-        print("as_llvm_type: builtin type %S not implemented.\n", type->name);
+        print("as_llvm_type: Builtin type %S not implemented.\n", type->name);
         die("");
     }
 
-    die("as_llvm_type: only supports builtin types.");
+    die("as_llvm_type: Only builtin types supported.\n");
     return 0;
 }
 
@@ -94,10 +106,13 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
         for (s64 i = 0; i < decl->elements.size; i += 1) {
             Identifier *identifier = find(&state->env->current_scope->identifier_table, decl->symbols[i]->name);
             assert(identifier != 0);
+
+            state->declaration_name = decl->symbols[i]->name;
             
             identifier->backend_data = codegen(state, decl->elements[i]);
-            print("%S: %p\n", decl->symbols[i]->name, identifier->backend_data);
         }
+
+        state->declaration_name = {};
     } break;
 
     case SYNTAX_LAMBDA_DECL: {
@@ -121,11 +136,15 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
 
         assert(decl->returns.size < 2);
 
-        char *name = c_string_copy(decl->type.name, TempAllocator);
-        print("name %s\n", name);
+        char *name = 0;
+        if (state->declaration_name != "") {
+            name = c_string_copy(state->declaration_name, TempAllocator);
+        }
 
         LLVMTypeRef  lambda_type  = LLVMFunctionType(return_type, params.data, params.size, false);
         LLVMValueRef lambda_value = LLVMAddFunction(state->module, name, lambda_type);
+
+        if (decl->type.flags & TYPE_FLAG_FOREIGN) { return lambda_value; };
 
         for (s64 i = 0; i < params.size; i += 1) {
             Identifier *identifier = find(&decl->scope.identifier_table, decl->params[i].name);
@@ -185,7 +204,7 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
             append(&params, as_llvm_type(state, &call->args[i]->type));
         }
 
-        LLVMTypeRef return_type = as_llvm_type(state, &call->type.as.lambda.decl->returns[0].type);
+        LLVMTypeRef return_type = as_llvm_type(state, call->type.as.lambda.returns[0]);
         LLVMTypeRef lambda_type = LLVMFunctionType(return_type, params.data, params.size, false);
 
         return LLVMBuildCall2(state->builder, lambda_type, lambda, args.data, args.size, "call");
@@ -213,7 +232,7 @@ void codegen_llvm(Environment *env) {
     LLVMDisposeMessage(error);
     error = 0;
 
-#if 0
+#if 1
     char *ir = LLVMPrintModuleToString(state.module);
     print("LLVM IR output:\n%s\n", ir);
     LLVMDisposeMessage(ir);

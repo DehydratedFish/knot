@@ -32,7 +32,7 @@ INTERNAL u8 Lookup[] = {
     C, D, D, D, D, D, D, D, D, D, D, D, D, D, D, D,
     B, B, B, B, B, B, B, B, B, B, D, D, D, D, D, D,
     D, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
-    A, A, A, A, A, A, A, A, A, A, A, D, D, D, D, D,
+    A, A, A, A, A, A, A, A, A, A, A, D, D, D, D, A,
     D, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
     A, A, A, A, A, A, A, A, A, A, A, D, D, D, D, E,
 
@@ -394,8 +394,9 @@ INTERNAL TokenKind advance_token(Parser *parser) {
     return parser->previous_token.kind;
 }
 
-Parser init_parser(String filename, String source) {
+Parser init_parser(Environment *env, String filename, String source) {
     Parser parser = {0};
+    parser.env = env;
 
     parser.source_code = source;
     parser.filename = filename;
@@ -435,6 +436,8 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 
 INTERNAL SyntaxOperator precedence_of(TokenKind kind) {
     switch (kind) {
+    case TOKEN_DOT:       return OP_DOT; break;
+
     case TOKEN_PLUS:      return OP_ADD; break;
     case TOKEN_MINUS:     return OP_SUB; break;
     case TOKEN_ASTERISK:  return OP_MUL; break;
@@ -464,7 +467,7 @@ INTERNAL SyntaxElement *parse_unary_expression(Parser *parser) {
     } break;
 
     case TOKEN_INTEGER: {
-        SyntaxIntegerLiteral *literal = ALLOC(DefaultAllocator, SyntaxIntegerLiteral, 1);
+        auto *literal = ALLOC(DefaultAllocator, SyntaxIntegerLiteral, 1);
         literal->kind = SYNTAX_INTEGER_LITERAL;
         literal->loc  = parser->previous_token.loc;
 
@@ -473,8 +476,18 @@ INTERNAL SyntaxElement *parse_unary_expression(Parser *parser) {
         return literal;
     } break;
 
+    case TOKEN_STRING: {
+        auto *literal = ALLOC(DefaultAllocator, SyntaxStringLiteral, 1);
+        literal->kind = SYNTAX_STRING_LITERAL;
+        literal->loc  = parser->previous_token.loc;
+
+        literal->string = parser->previous_token.content;
+
+        return literal;
+    } break;
+
     case TOKEN_IDENTIFIER: {
-        SyntaxIdentifier *ident = ALLOC(DefaultAllocator, SyntaxIdentifier, 1);
+        auto *ident = ALLOC(DefaultAllocator, SyntaxIdentifier, 1);
         ident->kind = SYNTAX_IDENTIFIER;
         ident->loc  = parser->previous_token.loc;
 
@@ -528,7 +541,18 @@ INTERNAL SyntaxElement *parse_binary_expression(Parser *parser, SyntaxElement *l
         call->args = create_array(arg_list);
 
         return call;
-    };
+    } break;
+
+    case TOKEN_DOT: {
+        auto *dot = ALLOC(DefaultAllocator, SyntaxDotOperator, 1);
+        dot->kind = SYNTAX_DOT;
+        dot->loc  = parser->previous_token.loc;
+
+        dot->lhs = lhs;
+        dot->rhs = parse_expression(parser, OP_DOT);
+
+        return dot;
+    } break;
 
     default:
         report_error(parser->env, parser->previous_token.loc, t_format("%S is not an binary operator.", parser->previous_token.content));
@@ -1044,12 +1068,11 @@ INTERNAL void synchronize(Parser *parser) {
     }
 }
 
-bool parse_as_knot_code(Parser *parser, Environment *env) {
+bool parse_as_knot_code(Parser *parser) {
     bool has_error = false;
 
-    env->filename = parser->filename;
-    parser->env = env;
-    parser->env->current_scope = &env->root;
+    parser->env->filename = parser->filename;
+    parser->env->current_scope = &parser->env->root;
 
     while (!current_token_is(parser, TOKEN_END_OF_INPUT)) {
         SyntaxElement *elem = parse(parser);
@@ -1078,8 +1101,7 @@ Environment parse_knot_file(String filename) {
     env.source = read_result.content;
     env.root.kind = SYNTAX_SCOPE; // TODO: This needs to be set and should go into an init function.
 
-    Parser parser = init_parser(filename, read_result.content);
-    parser.env = &env;
+    Parser parser = init_parser(&env, filename, read_result.content);
 
     // TODO: Report error?
     parse_scope(&parser, &env.root);

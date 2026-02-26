@@ -74,7 +74,7 @@ struct Parser {
     bool error_mode;
 };
 
-Parser init_parser(String filename, String source);
+Parser init_parser(Environment *env, String filename, String source);
 
 
 bool parse_as_knot_code(Parser *parser, Environment *env);

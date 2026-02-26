@@ -237,8 +237,13 @@ INTERNAL void fill_builtin_operator(BuiltinLambdaInfo *info, Type *type) {
 */
 
 INTERNAL void declare_builtins(SyntaxScope *scope) {
-    BuiltinTypeU8  = make_builtin_integer_type("u8",  {false});
+    BuiltinTypeU8  = make_builtin_integer_type("u8" , {false});
+    BuiltinTypeU16 = make_builtin_integer_type("u16", {true});
+    BuiltinTypeU32 = make_builtin_integer_type("u32", {true});
+    BuiltinTypeU64 = make_builtin_integer_type("u64", {true});
 
+    BuiltinTypeS8  = make_builtin_integer_type("s8" , {true});
+    BuiltinTypeS16 = make_builtin_integer_type("s16", {true});
     BuiltinTypeS32 = make_builtin_integer_type("s32", {true});
     BuiltinTypeS64 = make_builtin_integer_type("s64", {true});
 
@@ -261,7 +266,13 @@ INTERNAL void declare_builtins(SyntaxScope *scope) {
     BuiltinMul = make_builtin_lambda("*");
     BuiltinDiv = make_builtin_lambda("/");
 
-    declare_type(scope, &BuiltinTypeU8);
+    declare_type(scope, &BuiltinTypeU8 );
+    declare_type(scope, &BuiltinTypeU16);
+    declare_type(scope, &BuiltinTypeU32);
+    declare_type(scope, &BuiltinTypeU64);
+
+    declare_type(scope, &BuiltinTypeS8 );
+    declare_type(scope, &BuiltinTypeS16);
     declare_type(scope, &BuiltinTypeS32);
     declare_type(scope, &BuiltinTypeS64);
 
@@ -289,6 +300,46 @@ Identifier *resolve_identifier(SyntaxScope *scope, String name) {
 
     return identifier;
 }
+
+INTERNAL b32 lambda_fits(Environment *env, Type *type, Array<SyntaxElement*> args) {
+    assert(type->kind == TYPE_LAMBDA);
+
+    LambdaType *lambda = &type->as.lambda;
+    if (lambda->decl->params.size == args.size) {
+        for (s64 i = 0; i < lambda->decl->params.size; i += 1) {
+            TypingResult result = check(env, args[i], &lambda->decl->params[i].type);
+            if (result != TYPING_CORRECT) return false;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+INTERNAL s64 resolve_overload(Environment *env, Array<Type*> overloads, Array<SyntaxElement*> args, Array<SyntaxElement*> returns = {}) {
+    for (s64 i = 0; i < overloads.size; i += 1) {
+        if (lambda_fits(env, overloads[i], args)) return i;
+    }
+
+    return -1;
+}
+
+INTERNAL Array<Type*> get_overloads(Environment *env, SyntaxElement *elem) {
+    if (elem->kind == SYNTAX_IDENTIFIER) {
+        SyntaxIdentifier *ident = (SyntaxIdentifier*)elem;
+        
+        Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
+        if (identifier == 0) return {};
+        if (identifier->kind != IDENTIFIER_LAMBDA) return {};
+        assert(identifier->lambda_set.size > 0);
+
+        return identifier->lambda_set;
+    }
+
+    return {};
+}
+
 
 INTERNAL TypingResult infer_identifier(Environment *env, SyntaxIdentifier *ident) {
     Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
@@ -345,6 +396,12 @@ INTERNAL TypingResult infer_integer_literal(Environment *env, SyntaxIntegerLiter
     return TYPING_CORRECT;
 }
 
+INTERNAL TypingResult infer_string_literal(Environment *env, SyntaxStringLiteral *literal) {
+    literal->type.flags |= TYPE_FLAG_CONSTANT;
+    
+    return TYPING_CORRECT;
+}
+
 INTERNAL TypingResult infer_binary_operator(Environment *env, SyntaxBinaryOperator *op) {
     TypingResult result;
 
@@ -393,23 +450,28 @@ INTERNAL SyntaxStructMember *find_member(Type *type, String name) {
 }
 
 INTERNAL TypingResult infer_dot_operator(Environment *env, SyntaxDotOperator *dot) {
-    // TODO: Incorrect for nested . operations.
-    Identifier *ident = resolve_identifier(env->current_scope, dot->lhs->name);
-    if (!ident) {
-        report_error(env, dot->lhs->loc, t_format("Undeclared identifier %S.", dot->lhs->name));
+    TypingResult result = {};
+
+    result = infer(env, dot->lhs);
+    if (result != TYPING_CORRECT) return result;
+
+    if (dot->rhs->kind != SYNTAX_IDENTIFIER) {
+        report_error(env, dot->rhs->loc, "Right hand side of the . operator needs to be an identifier.");
         return TYPING_ERROR;
     }
 
-    if (ident->kind == IDENTIFIER_VARIABLE && ident->type->kind == TYPE_STRUCT) {
-        SyntaxStructMember *member = find_member(ident->type, dot->rhs->name);
+    String name = ((SyntaxIdentifier*)dot->rhs)->name;
+
+    if (dot->lhs->type.kind == TYPE_STRUCT) {
+        SyntaxStructMember *member = find_member(&dot->lhs->type, name);
         if (!member) {
-            report_error(env, dot->rhs->loc, t_format("Struct %S has no member %S.", dot->lhs->name, dot->rhs->name));
+            report_error(env, dot->rhs->loc, t_format("Struct %S has no member %S.", dot->lhs->type.name, name));
             return TYPING_ERROR;
         }
 
         dot->type = member->type;
     } else {
-        report_error(env, dot->lhs->loc, t_format("%S has no members.", dot->lhs->name));
+        report_error(env, dot->lhs->loc, "Expression has no members.");
         return TYPING_ERROR;
     }
 
@@ -439,6 +501,11 @@ INTERNAL b32 bind_symbols(Environment *env, Array<SyntaxIdentifier*> symbols, Sy
                 return false;
             }
         } else if (elem->kind == SYNTAX_INTEGER_LITERAL) {
+            if (!declare(env->current_scope, IDENTIFIER_SYNTAX, symbols[0]->name, elem)) {
+                report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
+                return false;
+            }
+        } else if (elem->kind == SYNTAX_STRING_LITERAL) {
             if (!declare(env->current_scope, IDENTIFIER_SYNTAX, symbols[0]->name, elem)) {
                 report_error(env, symbols[0]->loc, t_format("Identifier %S already declared.", symbols[0]->name));
                 return false;
@@ -505,6 +572,7 @@ INTERNAL TypingResult infer_symbol_declaration(Environment *env, SyntaxSymbolDec
 INTERNAL TypingResult infer_variable_declaration(Environment *env, SyntaxVariableDeclaration *decl) {
     s64 symbol_index = 0;
     
+    /*
     for (s64 i = 0; i < decl->expressions.size; i += 1) {
         SyntaxElement *elem = decl->expressions[i];
 
@@ -521,6 +589,37 @@ INTERNAL TypingResult infer_variable_declaration(Environment *env, SyntaxVariabl
             symbol_index += 1;
         }
     }
+    */
+
+    for (s64 i = 0; i < decl->expressions.size; i += 1) {
+        SyntaxElement *elem = decl->expressions[i];
+
+        if (symbol_index >= decl->variables.size) {
+            report_error(env, decl->loc, "Too few symbols for declaration.");
+            return TYPING_ERROR;
+        }
+
+        SyntaxIdentifier *var = decl->variables[symbol_index];
+        if (var->type.kind == TYPE_SPECIFIER) {
+            if (check(env, elem, &var->type) == TYPING_ERROR) {
+                //print("ERROR: Check in decl %S.", symbol->name);
+                return TYPING_ERROR;
+            }
+        } else {
+            if (infer(env, elem) == TYPING_ERROR) {
+                //print("ERROR: infer in decl %S.", symbol->name);
+                return TYPING_ERROR;
+            }
+        }
+
+        s32 needed_symbols = get_binding_count(elem);
+        Array<SyntaxIdentifier*> vars = slice(decl->variables, symbol_index, needed_symbols);
+
+        if (!bind_symbols(env, vars, elem)) return TYPING_ERROR;
+
+        symbol_index += needed_symbols;
+    }
+
 
     return TYPING_CORRECT;
 }
@@ -607,8 +706,47 @@ INTERNAL TypingResult infer_lambda(Environment *env, SyntaxLambda *lambda) {
         }
     }
 
+    LambdaType *type = &lambda->type.as.lambda;
+
+    // IMPORTANT: Needs to be freed together as well.
+    Array<Type*> storage = array_allocate<Type*>(lambda->params.size + lambda->returns.size);
+    type->params  = slice(storage, 0, lambda->params.size);
+    type->returns = slice(storage, lambda->params.size, lambda->returns.size);
+
+    for (s64 i = 0; i < type->params.size; i += 1) {
+        type->params[i] = &lambda->params[i].type;
+    }
+
+    for (s64 i = 0; i < type->returns.size; i += 1) {
+        type->returns[i] = &lambda->returns[i].type;
+    }
+
     return infer_scope(env, &lambda->scope);
 }
+
+INTERNAL TypingResult infer_call(Environment *env, SyntaxCall *call) {
+    TypingResult result;
+
+    result = infer(env, call->callee);
+    if (result != TYPING_CORRECT) return result;
+
+    for (s64 i = 0; i < call->args.size; i += 1) {
+        result = infer(env, call->args[i]);
+        if (result != TYPING_CORRECT) return result;
+    }
+
+    Array<Type*> overloads = get_overloads(env, call->callee);
+    s64 index = resolve_overload(env, overloads, call->args);
+    if (index == -1) {
+        report_error(env, call->loc, "Could not resolve lambda for call.");
+        return TYPING_ERROR;
+    }
+
+    call->type = *overloads[index];
+
+    return TYPING_CORRECT;
+}
+
 
 INTERNAL TypingResult infer_return(Environment *env, SyntaxReturn *ret) {
     SyntaxLambda *lambda = env->current_lambda;
@@ -641,6 +779,7 @@ INTERNAL TypingResult infer(Environment *env, SyntaxElement *elem) {
     case SYNTAX_KIND_NONE: { print("Node type not set.\n"); result = TYPING_ERROR; } break;
 
     case SYNTAX_INTEGER_LITERAL: { result = infer_integer_literal(env, (SyntaxIntegerLiteral*)elem); } break;
+    case SYNTAX_STRING_LITERAL:  { result = infer_string_literal(env, (SyntaxStringLiteral*)elem); } break;
     case SYNTAX_SYMBOL_DECL:     { result = infer_symbol_declaration(env, (SyntaxSymbolDeclaration*)elem); } break;
     case SYNTAX_VARIABLE_DECL:   { result = infer_variable_declaration(env, (SyntaxVariableDeclaration*)elem); } break;
     case SYNTAX_IDENTIFIER:      { result = infer_identifier(env, (SyntaxIdentifier*)elem); } break;
@@ -649,6 +788,7 @@ INTERNAL TypingResult infer(Environment *env, SyntaxElement *elem) {
     case SYNTAX_STRUCT_DECL:     { result = infer_struct(env, (SyntaxStruct*)elem); } break;
     case SYNTAX_LAMBDA_DECL:     { result = infer_lambda(env, (SyntaxLambda*)elem); } break; 
     case SYNTAX_RETURN:          { result = infer_return(env, (SyntaxReturn*)elem); } break;
+    case SYNTAX_CALL:            { result = infer_call(env, (SyntaxCall*)elem); } break;
 
     default:
         report_diagnostic(env, DIAGNOSTIC_ERROR, elem->loc, format("[DEBUG] Can't infer SyntaxElement with type %S.", enum_string(elem->kind)));
@@ -726,43 +866,38 @@ INTERNAL TypingResult check_identifier(Environment *env, SyntaxIdentifier *ident
     return TYPING_CORRECT;
 }
 
-INTERNAL b32 lambda_fits(Environment *env, Type *type, Array<SyntaxElement*> args) {
-    assert(type->kind == TYPE_LAMBDA);
+INTERNAL TypingResult check_dot_operator(Environment *env, SyntaxDotOperator *dot, Type *expected) {
+    TypingResult result = {};
 
-    LambdaType *lambda = &type->as.lambda;
-    if (lambda->decl->params.size == args.size) {
-        for (s64 i = 0; i < lambda->decl->params.size; i += 1) {
-            TypingResult result = check(env, args[i], &lambda->decl->params[i].type);
-            if (result != TYPING_CORRECT) return false;
+    result = infer(env, dot->lhs);
+    if (result != TYPING_CORRECT) return result;
+
+    if (dot->rhs->kind != SYNTAX_IDENTIFIER) {
+        report_error(env, dot->rhs->loc, "Right hand side of the . operator needs to be an identifier.");
+        return TYPING_ERROR;
+    }
+
+    String name = ((SyntaxIdentifier*)dot->rhs)->name;
+
+    if (dot->lhs->type.kind == TYPE_STRUCT) {
+        SyntaxStructMember *member = find_member(&dot->lhs->type, name);
+        if (!member) {
+            report_error(env, dot->rhs->loc, t_format("Struct %S has no member %S.", dot->lhs->type.name, name));
+            return TYPING_ERROR;
         }
 
-        return true;
+        dot->type = member->type;
+    } else {
+        report_error(env, dot->lhs->loc, "Expression has no members.");
+        return TYPING_ERROR;
     }
 
-    return false;
-}
-
-INTERNAL s64 resolve_overload(Environment *env, Array<Type*> overloads, Array<SyntaxElement*> args, Array<SyntaxElement*> returns = {}) {
-    for (s64 i = 0; i < overloads.size; i += 1) {
-        if (lambda_fits(env, overloads[i], args)) return i;
+    if (is_same_type(&dot->type, expected)) {
+        report_error(env, dot->lhs->loc, "Expression of type [placeholder] is not implemented.");
+        return TYPING_ERROR;
     }
 
-    return -1;
-}
-
-INTERNAL Array<Type*> get_overloads(Environment *env, SyntaxElement *elem) {
-    if (elem->kind == SYNTAX_IDENTIFIER) {
-        SyntaxIdentifier *ident = (SyntaxIdentifier*)elem;
-        
-        Identifier *identifier = resolve_identifier(env->current_scope, ident->name);
-        if (identifier == 0) return {};
-        if (identifier->kind != IDENTIFIER_LAMBDA) return {};
-        assert(identifier->lambda_set.size > 0);
-
-        return identifier->lambda_set;
-    }
-
-    return {};
+    return TYPING_CORRECT;
 }
 
 INTERNAL TypingResult check_call(Environment *env, SyntaxCall *call, Type *expected) {
@@ -800,6 +935,7 @@ INTERNAL TypingResult check(Environment *env, SyntaxElement *elem, Type *expecte
     case SYNTAX_IDENTIFIER:       result = check_identifier(env, (SyntaxIdentifier*)elem, expected); break;
     case SYNTAX_CALL:             result = check_call(env, (SyntaxCall*)elem, expected); break;
     case SYNTAX_LAMBDA_PARAMETER: result = check_lambda_param(env, (SyntaxLambdaParameter*)elem, expected); break;
+    case SYNTAX_DOT:              result = check_dot_operator(env, (SyntaxDotOperator*)elem, expected); break;
 
     default:
         report_diagnostic(env, DIAGNOSTIC_ERROR, elem->loc, t_format("[DEBUG] Can't check SyntaxElement with type %S.", enum_string(elem->kind)));

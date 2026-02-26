@@ -24,8 +24,10 @@ struct StructType {
 
 
 struct LambdaType {
-    // TODO: Unionize.
     SyntaxLambda *decl;
+
+    Array<Type*> params;
+    Array<Type*> returns;
 };
 
 enum TypeKind {
@@ -73,6 +75,9 @@ struct Type {
     String name;
 
     s32 pointer_depth;
+
+    // TODO: Needed?
+    void *backend_data;
 
     union {
         IntegerType integer;
@@ -155,6 +160,7 @@ enum SyntaxKind {
 
     SYNTAX_IDENTIFIER,
     SYNTAX_INTEGER_LITERAL,
+    SYNTAX_STRING_LITERAL,
 
     SYNTAX_CALL,
 
@@ -184,6 +190,7 @@ inline String enum_string(SyntaxKind kind) {
 
         "SYNTAX_IDENTIFIER",
         "SYNTAX_INTEGER_LITERAL",
+        "SYNTAX_STRING_LITERAL",
 
         "SYNTAX_CALL",
 
@@ -243,6 +250,10 @@ struct SyntaxIntegerLiteral : SyntaxElement {
     String value;
 };
 
+struct SyntaxStringLiteral : SyntaxElement {
+    String string;
+};
+
 
 struct SyntaxStructMember : SyntaxElement {
     SyntaxIdentifier ident;
@@ -268,8 +279,8 @@ struct SyntaxBinaryOperator : SyntaxElement {
 };
 
 struct SyntaxDotOperator : SyntaxElement {
-    SyntaxIdentifier *lhs;
-    SyntaxIdentifier *rhs;
+    SyntaxElement *lhs;
+    SyntaxElement *rhs;
 };
 
 struct SyntaxSymbolDeclaration : SyntaxElement {
