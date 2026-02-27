@@ -307,6 +307,7 @@ INTERNAL b32 lambda_fits(Environment *env, Type *type, Array<SyntaxElement*> arg
     LambdaType *lambda = &type->as.lambda;
     if (lambda->decl->params.size == args.size) {
         for (s64 i = 0; i < lambda->decl->params.size; i += 1) {
+            // IMPORTANT: This should be just a compare and not involve checking.
             TypingResult result = check(env, args[i], &lambda->decl->params[i].type);
             if (result != TYPING_CORRECT) return false;
         }
@@ -397,6 +398,7 @@ INTERNAL TypingResult infer_integer_literal(Environment *env, SyntaxIntegerLiter
 }
 
 INTERNAL TypingResult infer_string_literal(Environment *env, SyntaxStringLiteral *literal) {
+    literal->type = BuiltinTypeString;
     literal->type.flags |= TYPE_FLAG_CONSTANT;
     
     return TYPING_CORRECT;
@@ -470,6 +472,18 @@ INTERNAL TypingResult infer_dot_operator(Environment *env, SyntaxDotOperator *do
         }
 
         dot->type = member->type;
+    } else if (dot->lhs->type.kind == TYPE_STRING) {
+        if (name == "data") {
+            Type u8_ptr = BuiltinTypeU8;
+            u8_ptr.pointer_depth = 1;
+
+            dot->type = u8_ptr;
+        } else if (name == "size") {
+            dot->type = BuiltinTypeS64;
+        } else {
+            report_error(env, dot->lhs->loc, t_format("String has no member %S.", name));
+            return TYPING_ERROR;
+        }
     } else {
         report_error(env, dot->lhs->loc, "Expression has no members.");
         return TYPING_ERROR;
@@ -887,6 +901,18 @@ INTERNAL TypingResult check_dot_operator(Environment *env, SyntaxDotOperator *do
         }
 
         dot->type = member->type;
+    } else if (dot->lhs->type.kind == TYPE_STRING) {
+        if (name == "data") {
+            Type u8_ptr = BuiltinTypeU8;
+            u8_ptr.pointer_depth = 1;
+
+            dot->type = u8_ptr;
+        } else if (name == "size") {
+            dot->type = BuiltinTypeS64;
+        } else {
+            report_error(env, dot->lhs->loc, t_format("String has no member %S.", name));
+            return TYPING_ERROR;
+        }
     } else {
         report_error(env, dot->lhs->loc, "Expression has no members.");
         return TYPING_ERROR;

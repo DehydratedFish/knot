@@ -71,12 +71,17 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
             }
         }
         print("Identifier: %S with kind %S\n", ident->name, enum_string(ident->type.kind));
-        die("eval: SYNTAX_IDENTIFIER not complete.");
+        die("codegen: SYNTAX_IDENTIFIER not complete.");
     } break;
 
     case SYNTAX_INTEGER_LITERAL: {
         auto literal = (SyntaxIntegerLiteral*)elem;
         return LLVMConstInt(as_llvm_type(state, &literal->type), to_s64(literal->value), elem->type.as.integer.is_signed);
+    } break;
+
+    case SYNTAX_STRING_LITERAL: {
+        auto literal = (SyntaxStringLiteral*)elem;
+        return LLVMConstString((char*)literal->string.data, literal->string.size, true);
     } break;
 
     case SYNTAX_BINARY_OPERATOR: {
@@ -86,6 +91,12 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
         LLVMValueRef rhs = codegen(state, op->rhs);
 
         return LLVMBuildAdd(state->builder, lhs, rhs, "tmp");
+    } break;
+
+    case SYNTAX_DOT: {
+        auto *dot = (SyntaxDotOperator*)elem;
+
+        return codegen(state, dot->rhs);
     } break;
 
     case SYNTAX_SCOPE: {
@@ -110,6 +121,21 @@ INTERNAL LLVMValueRef codegen(CodegenState *state, SyntaxElement *elem) {
             state->declaration_name = decl->symbols[i]->name;
             
             identifier->backend_data = codegen(state, decl->elements[i]);
+        }
+
+        state->declaration_name = {};
+    } break;
+
+    case SYNTAX_VARIABLE_DECL: {
+        auto decl = (SyntaxVariableDeclaration*)elem;
+
+        for (s64 i = 0; i < decl->expressions.size; i += 1) {
+            Identifier *identifier = find(&state->env->current_scope->identifier_table, decl->variables[i]->name);
+            assert(identifier != 0);
+
+            state->declaration_name = decl->variables[i]->name;
+            
+            identifier->backend_data = codegen(state, decl->expressions[i]);
         }
 
         state->declaration_name = {};

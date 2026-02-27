@@ -163,7 +163,7 @@ s32 application_main(Array<String> args) {
     developer_print("\nDEBUG: Type checking.\n");
     if (!type_check(&env)) {
         print_diagnostics(&env);
-        print("Compiler encountered errors.");
+        print("Compiler encountered errors.\n");
 
         return -1;
     }
